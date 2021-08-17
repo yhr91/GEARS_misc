@@ -94,12 +94,21 @@ class MLP(torch.nn.Module):
         return self.network(x)
     
 class GIN(torch.nn.Module):
-    def __init__(self, num_feats, num_layers, hidden_size, output_size=8):
+    """
+    Creates node level embeddings. All nodes for each graph are concatenated
+    at the end of the forward call.
+
+    """
+    def __init__(self, num_feats, num_genes, num_layers, hidden_size,
+                 embed_size):
         super(GIN, self).__init__()
         self.mp_layers = num_layers
         self.pre_mp = nn.Linear(num_feats, hidden_size)
         self.convs = nn.ModuleList()
         self.bns = nn.ModuleList()
+        self.embed_size = embed_size
+        self.num_genes = num_genes
+
         for l in range(self.mp_layers):
             layer = Sequential(
                 Linear(hidden_size, hidden_size),
@@ -111,31 +120,37 @@ class GIN(torch.nn.Module):
         self.post_mp = Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.LeakyReLU(),
-            nn.Linear(hidden_size, output_size),
+            nn.Linear(hidden_size, embed_size),
         )
 
     def forward(self, data):
-        x, edge_index = data.x, data.edge_index
-        batch = np.zeros(data.x.shape[1])
-        x = self.pre_mp(x.T)
+        x, edge_index, batch = data.x, data.edge_index, data.batch
+        x = self.pre_mp(x)
         for i in range(len(self.convs) - 1):
             x = self.convs[i](x, edge_index)
             x = self.bns[i](x)
         x = self.convs[-1](x, edge_index)
+        x = self.post_mp(x)
 
-        #x = pyg_nn.global_add_pool(x, batch) # Replace this with concat
-
-        x = self.post_mp(x)          ## Change
-        #x = F.log_softmax(x, dim=1)  ## Change        
-        
-        return torch.unsqueeze(torch.flatten(x),0)
+        x = torch.split(torch.flatten(x), self.num_genes * self.embed_size)
+        return torch.stack(x)
 
 class GNN_AE(torch.nn.Module):
+    """
+    GNN + AE Model consisting of two steps:
+    (i) [GNN] message passing over gene-gene graph with expression and
+    perturbations together represented as two dimensional node features
+    (ii) [AE] "auto-encoder" to convert concatenated node embeddings to post
+    perturbation expression state
+    """
     def __init__(self, num_node_features, num_genes,
-                 gnn_num_layers, node_embed_size,
-                 ae_num_layers, ae_hidden_size, ae_input_size):
+                 gnn_num_layers, node_hidden_size, node_embed_size,
+                 ae_num_layers, ae_hidden_size):
         super(GNN_AE, self).__init__()
-        self.GNN = GIN(num_node_features, gnn_num_layers, node_embed_size)
+
+        ae_input_size = node_embed_size * num_genes
+        self.GNN = GIN(num_node_features, num_genes, gnn_num_layers,
+                       node_hidden_size, node_embed_size)
         self.encoder = MLP(
             [ae_input_size] + [ae_hidden_size] * ae_num_layers + [ae_hidden_size])
         self.decoder = MLP(

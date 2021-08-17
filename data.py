@@ -12,7 +12,7 @@ def create_cell_graph(X, node_map, G):
     graph (e.g coexpression) to create a cell specific graph
     """
     
-    feature_mat = torch.Tensor(np.concatenate([X, np.zeros([1,len(X[0])])]))
+    feature_mat = torch.Tensor(np.concatenate([X, np.zeros([1,len(X[0])])])).T
     y = torch.Tensor(X)
 
     # Set up edges
