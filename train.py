@@ -8,6 +8,7 @@ import torch.nn.functional as F
 import argparse
 from model import GNN_AE, linear_model
 from data import create_cell_graph_dataset
+from sklearn.model_selection import train_test_split
 from copy import deepcopy
 
 import sys
@@ -62,32 +63,52 @@ def test(loader, model, device='cuda'):
     return mse
 
 
+def create_dataloaders(adata, G, args):
+    """
+    Set up dataloaders and splits
+
+    """
+    print("Creating dataloaders")
+
+    ## Ues control cells to create a graph dataset
+    control_adata = adata[adata.obs['condition'] == 'ctrl']
+
+    # Pick 50 random cells for testing code
+    # control_dataset = control_adata[np.random.randint(0, len(control_adata),
+    # 100),:]
+    control_dataset = control_adata
+    cell_graphs_dataset = create_cell_graph_dataset(control_dataset, G)
+
+    # Train/Test splits
+    train, test = train_test_split(cell_graphs_dataset, train_size=0.75,
+                                   shuffle=True)
+    val, test = train_test_split(test, train_size=0.5, shuffle=True)
+
+    # Set up dataloaders
+    train_loader = DataLoader(train, batch_size=args['batch_size'],
+                              shuffle=True)
+    val_loader = DataLoader(val, batch_size=args['batch_size'],
+                              shuffle=True)
+    test_loader = DataLoader(test, batch_size=args['batch_size'],
+                              shuffle=True)
+
+    print("Dataloaders created")
+    return {'train_loader':train_loader,
+            'val_loader':val_loader,
+            'test_loader':test_loader}
+
+
+
 def trainer(args):
     adata = sc.read_h5ad(args['fname'])
     gene_list = [f for f in adata.var.gene_symbols.values]
     args['gene_list'] = gene_list
 
-    model = linear_model(args)
+    l_model = linear_model(args)
 
-    ## Ues control cells to create a graph dataset
-    control_adata = adata[adata.obs['condition'] == 'ctrl']
-
-    ## TODO replace with dataloaders
-    # Pick 50 random cells for testing code
-    control_dataset = control_adata[np.random.randint(0, len(control_adata),100),:]
-
-    cell_graphs_dataset = create_cell_graph_dataset(control_dataset, model.G)
-    train_loader = DataLoader(cell_graphs_dataset[:60],
-                              batch_size=args['batch_size'],
-                              shuffle=True)
-    val_loader = DataLoader(cell_graphs_dataset[60:80],
-                              batch_size=args['batch_size'],
-                              shuffle=True)
-    test_loader = DataLoader(cell_graphs_dataset[80:],
-                              batch_size=args['batch_size'],
-                              shuffle=True)
-
-    best_model = train(train_loader, val_loader, test_loader, args,
+    loaders = create_dataloaders(adata, l_model.G, args)
+    best_model = train(loaders['train_loader'], loaders['val_loader'],
+                       loaders['test_loader'], args,
                        num_node_features=2,  device=args["device"])
 
 
@@ -107,7 +128,7 @@ def parse_arguments():
     parser.add_argument('--split_key', type=str, default="split_yhr_TFcombos")
     parser.add_argument('--loss_ae', type=str, default='gauss')
     parser.add_argument('--doser_type', type=str, default='sigm')
-    parser.add_argument('--batch_size', type=int, default=20)
+    parser.add_argument('--batch_size', type=int, default=100)
     parser.add_argument('--decoder_activation', type=str, default='linear')
     parser.add_argument('--seed', type=int, default=0)
 
@@ -119,8 +140,8 @@ def parse_arguments():
                     '/learnt_weights/Norman2019_ctrl_only_learntweights.csv')
 
     # training arguments
-    parser.add_argument('--device', type=str, default='cpu')
-    parser.add_argument('--max_epochs', type=int, default=500)
+    parser.add_argument('--device', type=str, default='cuda:1')
+    parser.add_argument('--max_epochs', type=int, default=5)
     parser.add_argument('--max_minutes', type=int, default=400)
     parser.add_argument('--patience', type=int, default=20)
     parser.add_argument('--checkpoint_freq', type=int, default=20)

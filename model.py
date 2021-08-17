@@ -2,15 +2,10 @@ import torch
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
-import torch_geometric.transforms as T
-import torch.optim as optim
 import networkx as nx
-import torch_geometric.nn as pyg_nn
 
 from torch_geometric.nn import GINConv
 from torch.nn import Sequential, Linear, ReLU
-from deepsnap.batch import Batch
-from torch_geometric.data import Data
 import pandas as pd
 
 import sys
