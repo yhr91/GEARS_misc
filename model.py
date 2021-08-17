@@ -52,14 +52,14 @@ class linear_model():
         # Get an adjacency matrix based on the gene ordering from the DE list
         return nx.linalg.graphmatrix.adjacency_matrix(
             self.G, nodelist=self.gene_list).todense()
-    
-    
+
+
 class MLP(torch.nn.Module):
     """
     A multilayer perceptron with ReLU activations and optional BatchNorm.
     """
 
-    def __init__(self, sizes, batch_norm=False, last_layer_act="linear"):
+    def __init__(self, sizes, batch_norm=True, last_layer_act="linear"):
         super(MLP, self).__init__()
         layers = []
         for s in range(len(sizes) - 1):
@@ -87,7 +87,8 @@ class MLP(torch.nn.Module):
            dim = x.size(1) // 2
            return torch.cat((self.relu(x[:, :dim]), x[:, dim:]), dim=1)
         return self.network(x)
-    
+
+
 class GIN(torch.nn.Module):
     """
     Creates node level embeddings. All nodes for each graph are concatenated
@@ -130,6 +131,7 @@ class GIN(torch.nn.Module):
         x = torch.split(torch.flatten(x), self.num_genes * self.embed_size)
         return torch.stack(x)
 
+
 class GNN_AE(torch.nn.Module):
     """
     GNN + AE Model consisting of two steps:
@@ -161,5 +163,3 @@ class GNN_AE(torch.nn.Module):
 
     def loss(self, pred, y):
         return F.mse_loss(pred, y)
-    
-    

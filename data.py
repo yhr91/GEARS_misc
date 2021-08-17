@@ -5,6 +5,7 @@ from torch_geometric.data import Data
 import sys
 sys.path.append('/dfs/user/yhr/cell_reprogram/model/')
 
+
 # Set up feature matrix and output
 def create_cell_graph(X, node_map, G):
     """
@@ -22,6 +23,7 @@ def create_cell_graph(X, node_map, G):
     # Create graph dataset
     return Data(x=feature_mat, edge_index=edge_index, y=y)
 
+
 def create_cell_graph_dataset(adata, G):
     """
     Create a dataset of graphs using AnnData object
@@ -35,4 +37,3 @@ def create_cell_graph_dataset(adata, G):
         cell_graphs.append(create_cell_graph(X.toarray(), node_map, G))
     
     return cell_graphs
-    

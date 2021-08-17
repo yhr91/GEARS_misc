@@ -52,6 +52,7 @@ def train(train_loader, val_loader, test_loader, args,
         print(log.format(epoch + 1, train_mse, val_mse, test_mse, total_loss))
     return best_model
 
+
 def test(loader, model, device='cuda'):
     model.eval()
     for batch in loader:
@@ -96,7 +97,6 @@ def create_dataloaders(adata, G, args):
     return {'train_loader':train_loader,
             'val_loader':val_loader,
             'test_loader':test_loader}
-
 
 
 def trainer(args):
