@@ -46,8 +46,8 @@ def train(train_loader, val_loader, test_loader, args,
         total_loss /= num_graphs
         train_res = evaluate(train_loader, model, device)
         val_res = evaluate(val_loader, model, device)
-        if val_mse < min_val:
-            min_val = val_mse
+        if val_res['mse'] < min_val:
+            min_val = val_res['mse']
             best_model = deepcopy(model)
 
         # This test evaluation step should ideally be removed from here
@@ -60,6 +60,13 @@ def train(train_loader, val_loader, test_loader, args,
                          val_res['mse'], val_res['r2'],
                          test_res['mse'], test_res['r2'],
                          total_loss))
+
+        log = "DE_Train: {:.4f}, R2 {:.4f} " \
+              "DE_Validation: {:.4f}. R2 {:.4f} " \
+              "DE_Test: {:.4f}, R2 {:.4f} "
+        print(log.format(train_res['mse_de'], train_res['r2_de'],
+                         val_res['mse_de'], val_res['r2_de'],
+                         test_res['mse_de'], test_res['r2_de']))
     return best_model
 
 
@@ -77,7 +84,10 @@ def evaluate(loader, model, device='cuda'):
         batch.to(device)
         results = {}
 
-        de_idx = batch.de_idx
+        if batch.de_idx is not None:
+            non_ctrl_idx = np.where([np.sum(d != None) for d in batch.de_idx])[0]
+
+        # TODO fix this
         with torch.no_grad():
             pred = model(batch)
             truth = batch.y
@@ -86,10 +96,19 @@ def evaluate(loader, model, device='cuda'):
             results['mse'] = F.mse_loss(pred, truth)
             results['r2'] = r2_loss(pred, truth)
 
+            results['mse_de'] = 0
+            results['r2_de'] = 0
+
             # differentially expressed genes
-            if de_idx is not None:
-                results['mse_de'] = F.mse_loss(pred[:,de_idx], truth[:,de_idx])
-                results['r2_de'] = r2_loss(pred[:,de_idx], truth[:,de_idx])
+            if batch.de_idx is not None:
+                pred_de = [pred[i,batch.de_idx[i]] for i in non_ctrl_idx]
+                truth_de = [truth[i, batch.de_idx[i]] for i in non_ctrl_idx]
+
+                pred_de = torch.stack(pred_de)
+                truth_de = torch.stack(truth_de)
+
+                results['mse_de'] = F.mse_loss(pred_de, truth_de)
+                results['r2_de'] = r2_loss(pred_de, truth_de)
     return results
 
 
@@ -104,15 +123,11 @@ def create_dataloaders(adata, G, args):
     cell_graphs = {}
 
     # Perturbation categories to use during training/validation
-    trainval_category = ['ctrl', 'KLF1+ctrl']
-
-    #'ctrl+KLF1', 'CEBPA+ctrl',
-    #                     'ctrl+CEBPA', 'CEBPE+ctrl', 'ctrl+CEBPE']
+    trainval_category = ['ctrl', 'KLF1+ctrl', 'ctrl+KLF1', 'CEBPA+ctrl',
+                         'ctrl+CEBPA', 'CEBPE+ctrl', 'ctrl+CEBPE']
 
     # Perturbation categories to use for OOD testing
-    ood_category = ['KLF1+CEBPA']
-
-    #, 'CEBPE+KLF1', 'ctrl+FOXA1', 'FOXA1+ctrl']
+    ood_category = ['KLF1+CEBPA', 'CEBPE+KLF1', 'ctrl+FOXA1', 'FOXA1+ctrl']
 
     for p in trainval_category + ood_category:
         cell_graphs[p] = create_cell_graph_dataset(adata, G, p,
@@ -194,7 +209,7 @@ def parse_arguments():
                     '/learnt_weights/Norman2019_ctrl_only_learntweights.csv')
 
     # training arguments
-    parser.add_argument('--device', type=str, default='cuda:1')
+    parser.add_argument('--device', type=str, default='cuda:2')
     parser.add_argument('--max_epochs', type=int, default=20)
     parser.add_argument('--max_minutes', type=int, default=400)
     parser.add_argument('--patience', type=int, default=20)
