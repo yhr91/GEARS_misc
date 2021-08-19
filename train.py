@@ -19,7 +19,7 @@ import sys
 sys.path.append('/dfs/user/yhr/cell_reprogram/model/')
 
 
-def train(train_loader, val_loader, test_loader, args,
+def train(train_loader, val_loader, ood_loader, args,
                     num_node_features, device="cpu"):
     num_genes=5000 ## TODO this should be computed
     model = GNN_AE(num_node_features, num_genes,
@@ -52,7 +52,7 @@ def train(train_loader, val_loader, test_loader, args,
             best_model = deepcopy(model)
 
         # This test evaluation step should ideally be removed from here
-        test_res = evaluate(test_loader, model, device)
+        test_res = evaluate(ood_loader, model, device)
         log = "Epoch {}: Train: {:.4f}, R2 {:.4f} " \
               "Validation: {:.4f}. R2 {:.4f} " \
               "Test: {:.4f}, R2 {:.4f} " \
@@ -128,6 +128,19 @@ def evaluate(loader, model, device='cuda'):
     return results
 
 
+def get_train_test_split(args):
+
+    adata = sc.read(args['fname'])
+    train_adata = adata[adata.obs[args['split_key']] == 'train']
+    val_adata = adata[adata.obs[args['split_key']] == 'test']
+    ood_adata = adata[adata.obs[args['split_key']] == 'test']
+
+    train_split = list(train_adata.obs['condition'].unique())
+    val_split = list(val_adata.obs['condition'].unique())
+    ood_split = list(ood_adata.obs['condition'].unique())
+
+    return train_split, val_split, ood_split
+
 def create_dataloaders(adata, G, args):
     """
     Set up dataloaders and splits
@@ -137,25 +150,14 @@ def create_dataloaders(adata, G, args):
 
     # Create control dataset
     cell_graphs = {}
-
-    # Perturbation categories to use during training/validation
-    trainval_category = ['ctrl']
-    ood_category = ['KLF1+CEBPA']
-
-    #trainval_category = ['ctrl', 'KLF1+ctrl', 'ctrl+KLF1', 'CEBPA+ctrl',
-    #                     'ctrl+CEBPA', 'CEBPE+ctrl', 'ctrl+CEBPE']
-
-    # Perturbation categories to use for OOD testing
-    #ood_category = ['KLF1+CEBPA', 'CEBPE+KLF1', 'ctrl+FOXA1', 'FOXA1+ctrl']
-
-    saved_graphs = './saved_graphs/'+\
-                   args['fname'].split('/')[-1].split('.h5ad')[0]+'.pkl'
+    train_split, val_split, ood_split = get_train_test_split(args)
 
     # Check if graphs have already been created and saved
+    saved_graphs = './saved_graphs/'+ args['modelname'] +'.pkl'
     if os.path.isfile(saved_graphs):
         cell_graphs = pickle.load(open(saved_graphs, "rb"))
     else:
-        for p in trainval_category + ood_category:
+        for p in train_split + val_split + ood_split:
             cell_graphs[p] = create_cell_graph_dataset(adata, G, p,
                                         num_samples= args['num_ctrl_samples'],
                                         binary_pert=args['binary_pert'])
@@ -164,46 +166,51 @@ def create_dataloaders(adata, G, args):
 
     # Create a perturbation train/test set
     # Train/Test splits
-    trainval_graphs = [cell_graphs[p] for p in trainval_category]
-    trainval_graphs = [item for sublist in trainval_graphs for item in sublist]
-    train, val = train_test_split(trainval_graphs, train_size=0.75,shuffle=True)
+    train = [cell_graphs[p] for p in train_split]
+    train = [item for sublist in train for item in sublist]
+    shuffle(train)
 
-    # Out of distribution split
-    ood_graphs = [cell_graphs[p] for p in ood_category]
-    ood_graphs = [item for sublist in ood_graphs for item in sublist]
-    test = ood_graphs
-    shuffle(test)
+    val = [cell_graphs[p] for p in val_split]
+    val = [item for sublist in val for item in sublist]
+    shuffle(val)
+
+    ood = [cell_graphs[p] for p in ood_split]
+    ood = [item for sublist in ood for item in sublist]
+    shuffle(ood)
 
     # Set up dataloaders
     train_loader = DataLoader(train, batch_size=args['batch_size'],
                               shuffle=True)
     val_loader = DataLoader(val, batch_size=args['batch_size'],
                               shuffle=True)
-    test_loader = DataLoader(test, batch_size=args['batch_size'],
+    ood_loader = DataLoader(ood, batch_size=args['batch_size'],
                               shuffle=True)
 
     print("Dataloaders created")
     return {'train_loader':train_loader,
             'val_loader':val_loader,
-            'test_loader':test_loader}
+            'ood_loader':ood_loader}
 
 
 def trainer(args):
     adata = sc.read_h5ad(args['fname'])
     gene_list = [f for f in adata.var.gene_symbols.values]
     args['gene_list'] = gene_list
+    args['modelname'] = args['fname'].split('/')[-1].split('.h5ad')[0]
 
     l_model = linear_model(args)
 
     loaders = create_dataloaders(adata, l_model.G, args)
     best_model = train(loaders['train_loader'], loaders['val_loader'],
-                       loaders['test_loader'], args,
+                       loaders['ood_loader'], args,
                        num_node_features=2,  device=args["device"])
 
     # Compute best ood performance overall
-    test_res = evaluate(loaders['test_loader'], best_model, args["device"])
+    test_res = evaluate(loaders['ood_loader'], best_model, args["device"])
     log = "Final best performing model: Test: {:.4f}, R2 {:.4f} "
     print(log.format(test_res['mse'], test_res['r2']))
+
+    torch.save(best_model.state_dict(), './saved_models/'+args['modelname'])
 
 
 def parse_arguments():
@@ -214,12 +221,12 @@ def parse_arguments():
     # dataset arguments
     parser = argparse.ArgumentParser(description='Perturbation response')
     parser.add_argument('--fname', type=str,
-                        default='/dfs/user/yhr/CPA_orig/datasets'
-                                '/Norman2019_prep_new_TFcombos.h5ad')
+                        default='./datasets/small.h5ad')
+                        #default='./datasets/Norman2019_prep_new_TFcombos.h5ad')
     parser.add_argument('--perturbation_key', type=str, default="condition")
     parser.add_argument('--species', type=str, default="human")
     parser.add_argument('--cell_type_key', type=str, default="cell_type")
-    parser.add_argument('--split_key', type=str, default="split_yhr_TFcombos")
+    parser.add_argument('--split_key', type=str, default="split_small")
     parser.add_argument('--loss_ae', type=str, default='gauss')
     parser.add_argument('--doser_type', type=str, default='sigm')
     parser.add_argument('--batch_size', type=int, default=100)
@@ -238,7 +245,7 @@ def parse_arguments():
     # training arguments
     parser.add_argument('--device', type=str, default='cuda:2')
     parser.add_argument('--max_epochs', type=int, default=20)
-    parser.add_argument('--max_minutes', type=int, default=400)
+    parser.add_argument('--max_minutes', type=int, default=50)
     parser.add_argument('--patience', type=int, default=20)
     parser.add_argument('--checkpoint_freq', type=int, default=20)
     parser.add_argument('--lr', type=float, default=3e-4)
