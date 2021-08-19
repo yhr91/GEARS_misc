@@ -2,8 +2,10 @@ import torch
 import torch.optim as optim
 import scanpy as sc
 import numpy as np
+import pickle
 from torch_geometric.data import DataLoader
 import torch.nn.functional as F
+import os
 
 import argparse
 from model import GNN_AE, linear_model
@@ -33,7 +35,6 @@ def train(train_loader, val_loader, test_loader, args,
         model.train()
         num_graphs = 0
         for itr, batch in enumerate(train_loader):  ## Change
-            #print(itr)
             batch.to(device)
             optimizer.zero_grad()
             pred = model(batch)
@@ -80,6 +81,11 @@ def r2_loss(output, target):
 
 def evaluate(loader, model, device='cuda'):
     model.eval()
+    pred = []
+    truth = []
+    pred_de = []
+    truth_de = []
+
     for batch in loader:
         batch.to(device)
         results = {}
@@ -87,28 +93,38 @@ def evaluate(loader, model, device='cuda'):
         if batch.de_idx is not None:
             non_ctrl_idx = np.where([np.sum(d != None) for d in batch.de_idx])[0]
 
-        # TODO fix this
         with torch.no_grad():
-            pred = model(batch)
-            truth = batch.y
+            p = model(batch)
+            t = batch.y
 
-            # all genes
-            results['mse'] = F.mse_loss(pred, truth)
-            results['r2'] = r2_loss(pred, truth)
-
-            results['mse_de'] = 0
-            results['r2_de'] = 0
+            pred.extend(p)
+            truth.extend(t)
 
             # differentially expressed genes
             if batch.de_idx is not None:
-                pred_de = [pred[i,batch.de_idx[i]] for i in non_ctrl_idx]
-                truth_de = [truth[i, batch.de_idx[i]] for i in non_ctrl_idx]
+                p_de = [p[i,batch.de_idx[i]] for i in non_ctrl_idx]
+                t_de = [t[i, batch.de_idx[i]] for i in non_ctrl_idx]
 
-                pred_de = torch.stack(pred_de)
-                truth_de = torch.stack(truth_de)
+                pred_de.extend(p_de)
+                truth_de.extend(t_de)
 
-                results['mse_de'] = F.mse_loss(pred_de, truth_de)
-                results['r2_de'] = r2_loss(pred_de, truth_de)
+    # all genes
+    pred = torch.stack(pred)
+    truth = torch.stack(truth)
+
+    results['mse'] = F.mse_loss(pred, truth)
+    results['r2'] = r2_loss(pred, truth)
+
+    results['mse_de'] = 0
+    results['r2_de'] = 0
+
+    if batch.de_idx is not None:
+        pred_de = torch.stack(pred_de)
+        truth_de = torch.stack(truth_de)
+
+        results['mse_de'] = F.mse_loss(pred_de, truth_de)
+        results['r2_de'] = r2_loss(pred_de, truth_de)
+
     return results
 
 
@@ -123,19 +139,30 @@ def create_dataloaders(adata, G, args):
     cell_graphs = {}
 
     # Perturbation categories to use during training/validation
-    trainval_category = ['ctrl', 'KLF1+ctrl', 'ctrl+KLF1', 'CEBPA+ctrl',
-                         'ctrl+CEBPA', 'CEBPE+ctrl', 'ctrl+CEBPE']
+    trainval_category = ['ctrl']
+    ood_category = ['KLF1+CEBPA']
+
+    #trainval_category = ['ctrl', 'KLF1+ctrl', 'ctrl+KLF1', 'CEBPA+ctrl',
+    #                     'ctrl+CEBPA', 'CEBPE+ctrl', 'ctrl+CEBPE']
 
     # Perturbation categories to use for OOD testing
-    ood_category = ['KLF1+CEBPA', 'CEBPE+KLF1', 'ctrl+FOXA1', 'FOXA1+ctrl']
+    #ood_category = ['KLF1+CEBPA', 'CEBPE+KLF1', 'ctrl+FOXA1', 'FOXA1+ctrl']
 
-    for p in trainval_category + ood_category:
-        cell_graphs[p] = create_cell_graph_dataset(adata, G, p,
-                                    num_samples= args['num_ctrl_samples'],
-                                    binary_pert=args['binary_pert'])
+    saved_graphs = './saved_graphs/'+\
+                   args['fname'].split('/')[-1].split('.h5ad')[0]+'.pkl'
+
+    # Check if graphs have already been created and saved
+    if os.path.isfile(saved_graphs):
+        cell_graphs = pickle.load(open(saved_graphs, "rb"))
+    else:
+        for p in trainval_category + ood_category:
+            cell_graphs[p] = create_cell_graph_dataset(adata, G, p,
+                                        num_samples= args['num_ctrl_samples'],
+                                        binary_pert=args['binary_pert'])
+        # Save graphs
+        pickle.dump(cell_graphs, open(saved_graphs, "wb"))
 
     # Create a perturbation train/test set
-
     # Train/Test splits
     trainval_graphs = [cell_graphs[p] for p in trainval_category]
     trainval_graphs = [item for sublist in trainval_graphs for item in sublist]
