@@ -234,7 +234,7 @@ def parse_arguments():
     # dataset arguments
     parser = argparse.ArgumentParser(description='Perturbation response')
     parser.add_argument('--fname', type=str,
-                        default='./datasets/Norman2019_prep_new_TFcombosin5k_numsamples_1.h5ad')
+                        default='./datasets/Norman2019_prep_new_TFcombosin5k_numsamples_2.h5ad')
     parser.add_argument('--perturbation_key', type=str, default="condition")
     parser.add_argument('--species', type=str, default="human")
     parser.add_argument('--cell_type_key', type=str, default="cell_type")
