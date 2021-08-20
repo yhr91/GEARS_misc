@@ -79,7 +79,7 @@ def r2_loss(output, target):
     return r2
 
 
-def evaluate(loader, model, device='cuda'):
+def evaluate(loader, model, device='cuda', return_all_res=False):
     model.eval()
     pred = []
     truth = []
@@ -118,14 +118,23 @@ def evaluate(loader, model, device='cuda'):
     results['mse_de'] = 0
     results['r2_de'] = 0
 
-    if batch.de_idx is not None:
+    if len(pred_de)>0:
         pred_de = torch.stack(pred_de)
         truth_de = torch.stack(truth_de)
 
         results['mse_de'] = F.mse_loss(pred_de, truth_de)
         results['r2_de'] = r2_loss(pred_de, truth_de)
 
-    return results
+    if return_all_res:
+        # Useful for debugging
+        all_res = {'pred_de':pred_de,
+                   'truth_de':truth_de,
+                   'pred':pred,
+                   'truth':truth}
+        return results, all_res
+
+    else:
+        return results
 
 
 def get_train_test_split(args):
@@ -197,6 +206,7 @@ def trainer(args):
     gene_list = [f for f in adata.var.gene_symbols.values]
     args['gene_list'] = gene_list
     args['modelname'] = args['fname'].split('/')[-1].split('.h5ad')[0]
+    args['num_ctrl_samples'] = adata.uns['num_ctrl_samples']
 
     l_model = linear_model(args)
 
@@ -206,10 +216,13 @@ def trainer(args):
                        num_node_features=2,  device=args["device"])
 
     # Compute best ood performance overall
-    test_res = evaluate(loaders['ood_loader'], best_model, args["device"])
+    test_res, all_res = evaluate(loaders['ood_loader'], best_model,
+                              args["device"], return_all_res=True)
     log = "Final best performing model: Test: {:.4f}, R2 {:.4f} "
     print(log.format(test_res['mse'], test_res['r2']))
 
+    # Save model outputs and best model
+    np.save('./saved_outputs'+args['modelname'], all_res)
     torch.save(best_model.state_dict(), './saved_models/'+args['modelname'])
 
 
@@ -221,18 +234,16 @@ def parse_arguments():
     # dataset arguments
     parser = argparse.ArgumentParser(description='Perturbation response')
     parser.add_argument('--fname', type=str,
-                        default='./datasets/small.h5ad')
-                        #default='./datasets/Norman2019_prep_new_TFcombos.h5ad')
+                        default='./datasets/Norman2019_prep_new_TFcombosin5k_numsamples_2.h5ad')
     parser.add_argument('--perturbation_key', type=str, default="condition")
     parser.add_argument('--species', type=str, default="human")
     parser.add_argument('--cell_type_key', type=str, default="cell_type")
-    parser.add_argument('--split_key', type=str, default="split_small")
+    parser.add_argument('--split_key', type=str, default="split_yhr_TFcombos")
     parser.add_argument('--loss_ae', type=str, default='gauss')
     parser.add_argument('--doser_type', type=str, default='sigm')
     parser.add_argument('--batch_size', type=int, default=100)
     parser.add_argument('--decoder_activation', type=str, default='linear')
     parser.add_argument('--seed', type=int, default=0)
-    parser.add_argument('--num_ctrl_samples', type=int, default=2)
     parser.add_argument('--binary_pert', type=bool, default=True)
 
     # network arguments
@@ -243,8 +254,8 @@ def parse_arguments():
                     '/learnt_weights/Norman2019_ctrl_only_learntweights.csv')
 
     # training arguments
-    parser.add_argument('--device', type=str, default='cuda:2')
-    parser.add_argument('--max_epochs', type=int, default=20)
+    parser.add_argument('--device', type=str, default='cuda:3')
+    parser.add_argument('--max_epochs', type=int, default=500)
     parser.add_argument('--max_minutes', type=int, default=50)
     parser.add_argument('--patience', type=int, default=20)
     parser.add_argument('--checkpoint_freq', type=int, default=20)
