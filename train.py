@@ -127,10 +127,10 @@ def evaluate(loader, model, device='cuda', return_all_res=False):
 
     if return_all_res:
         # Useful for debugging
-        all_res = {'pred_de':pred_de,
-                   'truth_de':truth_de,
-                   'pred':pred,
-                   'truth':truth}
+        all_res = {'pred_de':pred_de.detach().cpu(),
+                   'truth_de':truth_de.detach().cpu(),
+                   'pred':pred.detach().cpu(),
+                   'truth':truth.detach().cpu()}
         return results, all_res
 
     else:
@@ -142,7 +142,7 @@ def get_train_test_split(args):
     adata = sc.read(args['fname'])
     train_adata = adata[adata.obs[args['split_key']] == 'train']
     val_adata = adata[adata.obs[args['split_key']] == 'test']
-    ood_adata = adata[adata.obs[args['split_key']] == 'test']
+    ood_adata = adata[adata.obs[args['split_key']] == 'ood']
 
     train_split = list(train_adata.obs['condition'].unique())
     val_split = list(val_adata.obs['condition'].unique())
@@ -208,6 +208,8 @@ def trainer(args):
     args['modelname'] = args['fname'].split('/')[-1].split('.h5ad')[0]
     args['num_ctrl_samples'] = adata.uns['num_ctrl_samples']
 
+    print('Training '+ args['modelname'])
+
     l_model = linear_model(args)
 
     loaders = create_dataloaders(adata, l_model.G, args)
@@ -222,8 +224,9 @@ def trainer(args):
     print(log.format(test_res['mse'], test_res['r2']))
 
     # Save model outputs and best model
-    np.save('./saved_outputs'+args['modelname'], all_res)
-    torch.save(best_model.state_dict(), './saved_models/'+args['modelname'])
+    np.save('./saved_outputs/'+args['modelname'], all_res)
+    torch.save(best_model.state_dict(), './saved_models/'+args['modelname']+
+               '_'+ args['exp_name'])
 
 
 def parse_arguments():
@@ -234,7 +237,7 @@ def parse_arguments():
     # dataset arguments
     parser = argparse.ArgumentParser(description='Perturbation response')
     parser.add_argument('--fname', type=str,
-                        default='./datasets/Norman2019_prep_new_TFcombosin5k_numsamples_2.h5ad')
+                        default='./datasets/')
     parser.add_argument('--perturbation_key', type=str, default="condition")
     parser.add_argument('--species', type=str, default="human")
     parser.add_argument('--cell_type_key', type=str, default="cell_type")
@@ -255,7 +258,7 @@ def parse_arguments():
 
     # training arguments
     parser.add_argument('--device', type=str, default='cuda:3')
-    parser.add_argument('--max_epochs', type=int, default=500)
+    parser.add_argument('--max_epochs', type=int, default=10)
     parser.add_argument('--max_minutes', type=int, default=50)
     parser.add_argument('--patience', type=int, default=20)
     parser.add_argument('--checkpoint_freq', type=int, default=20)
@@ -265,6 +268,7 @@ def parse_arguments():
     parser.add_argument('--ae_hidden_size', type=int, default=512)
     parser.add_argument('--gnn_num_layers', type=int, default=4)
     parser.add_argument('--ae_num_layers', type=int, default=4)
+    parser.add_argument('--exp_name', type=str, default='test')
 
     # output arguments
     parser.add_argument('--save_dir', type=str, default='./test/')

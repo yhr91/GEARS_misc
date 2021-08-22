@@ -20,8 +20,8 @@ def get_pert_idx(pert_category, adata, ctrl_adata, binary_pert=True):
     # In case of binary perturbations, attach a sign to index value
     for i, p in enumerate(pert_idx):
         if binary_pert:
-            pert_idx[i] = np.sign(adata.X[0,p] -
-                                  ctrl_adata.X[0,p]) * pert_idx[i]
+            sign = np.sign(adata.X[0,p] - ctrl_adata.X[0,p])
+            pert_idx[i] = sign * pert_idx[i]
 
     return pert_idx
 
@@ -92,6 +92,6 @@ def create_cell_graph_dataset(adata, G, pert_category, num_samples=1,
     cell_graphs = []
     for X,y in zip(Xs, ys):
         cell_graphs.append(create_cell_graph(X.toarray(), y.toarray(),
-                                             node_map, G, de_idx, pert_idx))
+                        node_map, G, de_idx, pert_idx))
 
     return cell_graphs
