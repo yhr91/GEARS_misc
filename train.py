@@ -14,7 +14,7 @@ import sys
 sys.path.append('/dfs/user/yhr/cell_reprogram/model/')
 
 
-def train(train_loader, val_loader, ood_loader, args,
+def train(train_loader, val_loader, args,
                     num_node_features, device="cpu"):
     num_genes=5000 ## TODO this should be computed
     model = GNN_AE(num_node_features, num_genes,
@@ -193,11 +193,8 @@ def trainer(args):
 
     # Train a model
     best_model = train(loaders['train_loader'], loaders['val_loader'],
-                       loaders['ood_loader'], args,
-                       num_node_features=2,  device=args["device"])
+                       args, num_node_features=2,  device=args["device"])
 
-    #TODO
-    # Set the test seed
     test_res = evaluate(loaders['ood_loader'], best_model, args["device"])
     test_metrics, test_pert_res = compute_metrics(test_res)
 

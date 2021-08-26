@@ -64,6 +64,7 @@ def create_dataloaders(adata, G, args):
     print("Creating dataloaders")
 
     # Create control dataset
+    # TODO set seed for splits
     train_split, val_split, ood_split = get_train_test_split(args)
 
     # Check if graphs have already been created and saved
@@ -89,8 +90,6 @@ def create_dataloaders(adata, G, args):
         # Save graphs
         pickle.dump(cell_graphs, open(saved_graphs, "wb"))
 
-
-
     # Create a perturbation train/test set
     # Train/Test splits
     train = [cell_graphs[p] for p in train_split]
@@ -113,19 +112,10 @@ def create_dataloaders(adata, G, args):
     ood_loader = DataLoader(ood, batch_size=args['batch_size'],
                               shuffle=True)
 
-    # Get ood pert class scores separately
-    ood_perts = get_ood_pert_classes(adata, args['split_key'],
-                batch_size=args['batch_size'], single_only=False)
-    pert_loaders = []
-    for p in ood_perts:
-        pert_loaders.append(DataLoader(cell_graphs[p],
-                            batch_size=args['batch_size'], shuffle=True))
-
     print("Dataloaders created")
     return {'train_loader':train_loader,
             'val_loader':val_loader,
-            'ood_loader':ood_loader,
-            'pert_loaders': pert_loaders}
+            'ood_loader':ood_loader}
 
 
 def get_pert_idx(pert_category, adata, ctrl_adata, binary_pert=True):
