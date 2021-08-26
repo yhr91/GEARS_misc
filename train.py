@@ -2,18 +2,13 @@ import torch
 import torch.optim as optim
 import scanpy as sc
 import numpy as np
-import pickle
-from torch_geometric.data import DataLoader
-import torch.nn.functional as F
-import os
 
 import argparse
 from model import GNN_AE, linear_model
-from data import create_cell_graph_dataset
-from sklearn.model_selection import train_test_split
+from data import create_dataloaders
 from sklearn.metrics import r2_score
+from sklearn.metrics import mean_squared_error as mse
 from copy import deepcopy
-from random import shuffle
 
 import sys
 sys.path.append('/dfs/user/yhr/cell_reprogram/model/')
@@ -45,29 +40,29 @@ def train(train_loader, val_loader, ood_loader, args,
             total_loss += loss.item()
             num_graphs += batch.num_graphs
         total_loss /= num_graphs
+
+        # Evaluate model performance on train and val set
         train_res = evaluate(train_loader, model, device)
         val_res = evaluate(val_loader, model, device)
-        if val_res['mse'] < min_val:
-            min_val = val_res['mse']
+        train_metrics, _ = compute_metrics(train_res)
+        val_metrics, _ = compute_metrics(val_res)
+
+        if val_metrics['mse'] < min_val:
+            min_val = val_metrics['mse']
             best_model = deepcopy(model)
 
-        # This test evaluation step should ideally be removed from here
-        test_res = evaluate(ood_loader, model, device)
+        # Evaluate model performance on train and val set
         log = "Epoch {}: Train: {:.4f}, R2 {:.4f} " \
               "Validation: {:.4f}. R2 {:.4f} " \
-              "Test: {:.4f}, R2 {:.4f} " \
               "Loss: {:.4f}"
-        print(log.format(epoch + 1, train_res['mse'], train_res['r2'],
-                         val_res['mse'], val_res['r2'],
-                         test_res['mse'], test_res['r2'],
+        print(log.format(epoch + 1, train_metrics['mse'], train_metrics['r2'],
+                         val_metrics['mse'], val_metrics['r2'],
                          total_loss))
 
         log = "DE_Train: {:.4f}, R2 {:.4f} " \
-              "DE_Validation: {:.4f}. R2 {:.4f} " \
-              "DE_Test: {:.4f}, R2 {:.4f} "
-        print(log.format(train_res['mse_de'], train_res['r2_de'],
-                         val_res['mse_de'], val_res['r2_de'],
-                         test_res['mse_de'], test_res['r2_de']))
+              "DE_Validation: {:.4f}. R2 {:.4f} "
+        print(log.format(train_metrics['mse_de'], train_metrics['r2_de'],
+                         val_metrics['mse_de'], val_metrics['r2_de']))
     return best_model
 
 
@@ -79,19 +74,28 @@ def r2_loss(output, target):
     return r2
 
 
-def evaluate(loader, model, device='cuda', return_all_res=False):
+def evaluate(loader, model, device='cuda', num_de_idx=20):
+    """
+    Run model in inference mode using a given data loader
+    """
+
     model.eval()
+    pert_cat = []
     pred = []
     truth = []
     pred_de = []
     truth_de = []
+    results = {}
 
     for batch in loader:
         batch.to(device)
         results = {}
+        pert_cat.extend(batch.pert)
 
         if batch.de_idx is not None:
             non_ctrl_idx = np.where([np.sum(d != None) for d in batch.de_idx])[0]
+        else:
+            print('here')
 
         with torch.no_grad():
             p = model(batch)
@@ -100,105 +104,74 @@ def evaluate(loader, model, device='cuda', return_all_res=False):
             pred.extend(p)
             truth.extend(t)
 
-            # differentially expressed genes
-            if batch.de_idx is not None:
-                p_de = [p[i,batch.de_idx[i]] for i in non_ctrl_idx]
-                t_de = [t[i, batch.de_idx[i]] for i in non_ctrl_idx]
+            # Differentially expressed genes
+            for itr, de_idx in enumerate(batch.de_idx):
+                if de_idx is not None:
+                    pred_de.append(p[itr, de_idx])
+                    truth_de.append(t[itr, de_idx])
 
-                pred_de.extend(p_de)
-                truth_de.extend(t_de)
+                else:
+                    pred_de.append([torch.zeros(num_de_idx).to(device)])
+                    truth_de.append([torch.zeros(num_de_idx).to(device)])
 
     # all genes
+    results['pert_cat'] = np.array(pert_cat)
+
     pred = torch.stack(pred)
     truth = torch.stack(truth)
+    results['pred']= pred.detach().cpu().numpy()
+    results['truth']= truth.detach().cpu().numpy()
 
-    results['mse'] = F.mse_loss(pred, truth)
-    results['r2'] = r2_loss(pred, truth)
+    pred_de = torch.stack(pred_de)
+    truth_de = torch.stack(truth_de)
+    results['pred_de']= pred_de.detach().cpu().numpy()
+    results['truth_de']= truth_de.detach().cpu().numpy()
 
-    results['mse_de'] = 0
-    results['r2_de'] = 0
-
-    if len(pred_de)>0:
-        pred_de = torch.stack(pred_de)
-        truth_de = torch.stack(truth_de)
-
-        results['mse_de'] = F.mse_loss(pred_de, truth_de)
-        results['r2_de'] = r2_loss(pred_de, truth_de)
-
-    if return_all_res:
-        # Useful for debugging
-        all_res = {'pred_de':pred_de.detach().cpu(),
-                   'truth_de':truth_de.detach().cpu(),
-                   'pred':pred.detach().cpu(),
-                   'truth':truth.detach().cpu()}
-        return results, all_res
-
-    else:
-        return results
+    return results
 
 
-def get_train_test_split(args):
-
-    adata = sc.read(args['fname'])
-    train_adata = adata[adata.obs[args['split_key']] == 'train']
-    val_adata = adata[adata.obs[args['split_key']] == 'test']
-    ood_adata = adata[adata.obs[args['split_key']] == 'ood']
-
-    train_split = list(train_adata.obs['condition'].unique())
-    val_split = list(val_adata.obs['condition'].unique())
-    ood_split = list(ood_adata.obs['condition'].unique())
-
-    return train_split, val_split, ood_split
-
-def create_dataloaders(adata, G, args):
+def compute_metrics(results):
     """
-    Set up dataloaders and splits
+    Given results from a model run and the ground truth, compute metrics
 
     """
-    print("Creating dataloaders")
+    metrics = {}
+    metrics_pert = {}
+    metrics['mse'] = []
+    metrics['r2'] = []
+    metrics['mse_de'] = []
+    metrics['r2_de'] = []
 
-    # Create control dataset
-    cell_graphs = {}
-    train_split, val_split, ood_split = get_train_test_split(args)
+    for pert in np.unique(results['pert_cat']):
 
-    # Check if graphs have already been created and saved
-    saved_graphs = './saved_graphs/'+ args['modelname'] +'.pkl'
-    if os.path.isfile(saved_graphs):
-        cell_graphs = pickle.load(open(saved_graphs, "rb"))
-    else:
-        for p in train_split + val_split + ood_split:
-            cell_graphs[p] = create_cell_graph_dataset(adata, G, p,
-                                        num_samples= args['num_ctrl_samples'],
-                                        binary_pert=args['binary_pert'])
-        # Save graphs
-        pickle.dump(cell_graphs, open(saved_graphs, "wb"))
+        metrics_pert[pert] = {}
+        p_idx = np.where(results['pert_cat'] == pert)[0]
+        metrics['r2'].append(r2_score(results['pred'][p_idx].mean(0),
+                                      results['truth'][p_idx].mean(0)))
+        metrics['mse'].append(mse(results['pred'][p_idx].mean(0),
+                                  results['truth'][p_idx].mean(0)))
+        metrics_pert[pert]['r2'] = metrics['r2'][-1]
+        metrics_pert[pert]['mse'] = metrics['mse'][-1]
 
-    # Create a perturbation train/test set
-    # Train/Test splits
-    train = [cell_graphs[p] for p in train_split]
-    train = [item for sublist in train for item in sublist]
-    shuffle(train)
+        if pert != 'ctrl':
+            metrics['r2_de'].append(r2_score(results['pred_de'][p_idx].mean(0),
+                                           results['truth_de'][p_idx].mean(0)))
+            metrics['mse_de'].append(mse(results['pred_de'][p_idx].mean(0),
+                                         results['truth_de'][p_idx].mean(0)))
+            metrics_pert[pert]['r2_de'] = metrics['r2_de'][-1]
+            metrics_pert[pert]['mse_de'] = metrics['mse_de'][-1]
+        else:
+            metrics_pert[pert]['r2_de'] = 0
+            metrics_pert[pert]['mse_de'] = 0
 
-    val = [cell_graphs[p] for p in val_split]
-    val = [item for sublist in val for item in sublist]
-    shuffle(val)
 
-    ood = [cell_graphs[p] for p in ood_split]
-    ood = [item for sublist in ood for item in sublist]
-    shuffle(ood)
 
-    # Set up dataloaders
-    train_loader = DataLoader(train, batch_size=args['batch_size'],
-                              shuffle=True)
-    val_loader = DataLoader(val, batch_size=args['batch_size'],
-                              shuffle=True)
-    ood_loader = DataLoader(ood, batch_size=args['batch_size'],
-                              shuffle=True)
+    metrics['mse'] = np.mean(metrics['mse'])
+    metrics['r2'] = np.mean(metrics['r2'])
+    metrics['mse_de'] = np.mean(metrics['mse_de'])
+    metrics['r2_de'] = np.mean(metrics['r2_de'])
 
-    print("Dataloaders created")
-    return {'train_loader':train_loader,
-            'val_loader':val_loader,
-            'ood_loader':ood_loader}
+    return metrics, metrics_pert
 
 
 def trainer(args):
@@ -206,25 +179,33 @@ def trainer(args):
     gene_list = [f for f in adata.var.gene_symbols.values]
     args['gene_list'] = gene_list
     args['modelname'] = args['fname'].split('/')[-1].split('.h5ad')[0]
-    args['num_ctrl_samples'] = adata.uns['num_ctrl_samples']
 
-    print('Training '+ args['modelname'])
+    try:
+        args['num_ctrl_samples'] = adata.uns['num_ctrl_samples']
+    except:
+        args['num_ctrl_samples'] = 1
 
+    print('Training '+ args['modelname'] + '_' + args['exp_name'])
+
+    # Set up data loaders
     l_model = linear_model(args)
-
     loaders = create_dataloaders(adata, l_model.G, args)
+
+    # Train a model
     best_model = train(loaders['train_loader'], loaders['val_loader'],
                        loaders['ood_loader'], args,
                        num_node_features=2,  device=args["device"])
 
-    # Compute best ood performance overall
-    test_res, all_res = evaluate(loaders['ood_loader'], best_model,
-                              args["device"], return_all_res=True)
-    log = "Final best performing model: Test: {:.4f}, R2 {:.4f} "
-    print(log.format(test_res['mse'], test_res['r2']))
+    #TODO
+    # Set the test seed
+    test_res = evaluate(loaders['ood_loader'], best_model, args["device"])
+    test_metrics, test_pert_res = compute_metrics(test_res)
+
+    log = "Final best performing model: Test_DE: {:.4f}, R2 {:.4f} "
+    print(log.format(test_metrics['mse_de'], test_metrics['r2_de']))
 
     # Save model outputs and best model
-    np.save('./saved_outputs/'+args['modelname'], all_res)
+    np.save('./saved_metrics/'+args['modelname'], test_pert_res)
     torch.save(best_model.state_dict(), './saved_models/'+args['modelname']+
                '_'+ args['exp_name'])
 
@@ -237,7 +218,7 @@ def parse_arguments():
     # dataset arguments
     parser = argparse.ArgumentParser(description='Perturbation response')
     parser.add_argument('--fname', type=str,
-                        default='./datasets/')
+                        default='./datasets/Norman2019_prep_new_TFcombosin5k_nocombo_somesingle_worstde_numsamples_1.h5ad')
     parser.add_argument('--perturbation_key', type=str, default="condition")
     parser.add_argument('--species', type=str, default="human")
     parser.add_argument('--cell_type_key', type=str, default="cell_type")
@@ -257,7 +238,7 @@ def parse_arguments():
                     '/learnt_weights/Norman2019_ctrl_only_learntweights.csv')
 
     # training arguments
-    parser.add_argument('--device', type=str, default='cuda:3')
+    parser.add_argument('--device', type=str, default='cuda:4')
     parser.add_argument('--max_epochs', type=int, default=10)
     parser.add_argument('--max_minutes', type=int, default=50)
     parser.add_argument('--patience', type=int, default=20)
@@ -269,6 +250,8 @@ def parse_arguments():
     parser.add_argument('--gnn_num_layers', type=int, default=4)
     parser.add_argument('--ae_num_layers', type=int, default=4)
     parser.add_argument('--exp_name', type=str, default='test')
+    parser.add_argument('--num_itr', type=int, default=1)
+    parser.add_argument('--workers', type=int, default=1)
 
     # output arguments
     parser.add_argument('--save_dir', type=str, default='./test/')
