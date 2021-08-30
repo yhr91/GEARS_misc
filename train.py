@@ -168,7 +168,7 @@ def trainer(args):
     gene_list = [f for f in adata.var.gene_symbols.values]
     args['gene_list'] = gene_list
     num_genes = len(gene_list)
-    args['modelname'] = args['fname'].split('/')[-1].split('.h5ad')[0] + 'test'
+    args['modelname'] = args['fname'].split('/')[-1].split('.h5ad')[0]
 
     try:
         args['num_ctrl_samples'] = adata.uns['num_ctrl_samples']

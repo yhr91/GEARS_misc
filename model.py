@@ -160,11 +160,12 @@ class GNN_2(torch.nn.Module):
         self.lin = Linear(hidden_size, embed_size)
 
     def forward(self, data):
-        x, edge_index, batch = data.x, data.edge_index, data.batch
+        x, edge_index, edge_attr, batch = data.x, data.edge_index, \
+                                          data.edge_attr, data.batch
         # 1. Obtain node embeddings
-        x = self.conv1(x, edge_index)
+        x = self.conv1(x, edge_index, edge_weight=edge_attr)
         x = x.relu()
-        x = self.conv2(x, edge_index)
+        x = self.conv2(x, edge_index, edge_weight=edge_attr)
         # x = x.relu()
         # x = self.conv3(x, edge_index)
         x = self.lin(x)
