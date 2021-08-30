@@ -5,8 +5,7 @@ import pickle
 from torch_geometric.data import DataLoader
 import os
 from random import shuffle
-from multiprocessing import Pool
-import tqdm
+import pandas as pd
 import scanpy as sc
 
 import sys
@@ -23,15 +22,15 @@ class PertDataloader():
     perturbation being applied to that node
     """
 
-    def __init__(self, adata, G, args, binary_pert=True):
+    def __init__(self, adata, G, weights, args, binary_pert=True):
         self.args = args
         self.adata = adata
         self.ctrl_adata = adata[adata.obs[args['perturbation_key']] == 'ctrl']
         self.G = G
+        self.weights = weights
         self.node_map = {x: it for it, x in enumerate(adata.var.gene_symbols)}
         self.binary_pert=binary_pert
         self.gene_names = self.adata.var.gene_symbols
-
         self.loaders = self.create_dataloaders()
 
     def create_dataloaders(self):
@@ -107,13 +106,26 @@ class PertDataloader():
         feature_mat = torch.Tensor(np.concatenate([X, pert_feats])).T
 
         # Set up edges
-        edge_index = [(self.node_map[e[0]], self.node_map[e[1]]) for e in
+        edge_index_ = [(self.node_map[e[0]], self.node_map[e[1]]) for e in
                       self.G.edges]
-        edge_index = torch.tensor(edge_index, dtype=torch.long).T
+        edge_index = torch.tensor(edge_index_, dtype=torch.long).T
+
+        # Set edge features
+        if self.args['edge_features']:
+            edge_attr = self.weights.copy()
+            edge_attr.index = edge_attr.index.map(self.node_map)
+            edge_attr['target'] = edge_attr['target'].map(self.node_map)
+            edges_df = pd.DataFrame(edge_index_, columns=['TF', 'target'])
+            edge_attr = edge_attr.reset_index().merge(edges_df,
+                                    on=['TF', 'target'], how='outer')
+            edge_attr = edge_attr.fillna(value=0)['importance'].values
+            edge_attr = torch.Tensor(edge_attr).unsqueeze(1)
+        else:
+            edge_attr = None
 
         # Create graph dataset
-        return Data(x=feature_mat, edge_index=edge_index, y=torch.Tensor(y),
-                    de_idx=de_idx, pert=pert)
+        return Data(x=feature_mat, edge_index=edge_index, edge_attr=edge_attr,
+                    y=torch.Tensor(y), de_idx=de_idx, pert=pert)
 
     def create_cell_graph_dataset(self, split_adata, pert_category,
                                   num_samples=1):

@@ -9,15 +9,18 @@ from torch.nn import Sequential, Linear, ReLU
 import pandas as pd
 
 import sys
+
 sys.path.append('/dfs/user/yhr/cell_reprogram/model/')
-from flow import get_graph, get_expression_data,\
-            add_weight, I_TF, get_TFs, solve,\
-            solve_parallel, get_expression_lambda
+from flow import get_graph, get_expression_data, \
+    add_weight, I_TF, get_TFs, solve, \
+    solve_parallel, get_expression_lambda
+
 
 # Helpers
 def weighted_mse_loss(input, target, weight):
     sample_mean = torch.mean((input - target) ** 2, 1)
     return torch.mean(weight * sample_mean)
+
 
 # Create adjacency matrix for computation
 class linear_model():
@@ -25,25 +28,26 @@ class linear_model():
         self.TFs = get_TFs(args['species'])
 
         # Set up graph structure
-        G_df = get_graph(name = args['regulon_name'],
-                           TF_only=False)
-        print('Edges: '+str(len(G_df)))
+        G_df = get_graph(name=args['regulon_name'],
+                         TF_only=False)
+        print('Edges: ' + str(len(G_df)))
         self.G = nx.from_pandas_edgelist(G_df, source=0,
-                            target=1, create_using=nx.DiGraph())
+                                         target=1, create_using=nx.DiGraph())
+
+        # Add nodes without edges but with expression to the graph
+        for n in args['gene_list']:
+            if n not in self.G.nodes():
+                self.G.add_node(n)
 
         # Add edge weights
-        self.read_weights = pd.read_csv(args['adjacency'] , index_col=0)
+        self.read_weights = pd.read_csv(args['adjacency'], index_col=0)
+        self.gene_list = args['gene_list']
         try:
             self.read_weights = self.read_weights.set_index('TF')
         except:
             pass
 
-        self.gene_list = args['gene_list']
-        # Get adjacency matrix
-        # self.adj_mat = self.create_adj_mat()
-    
-    
-    def create_adj_mat(self, gene_list):
+    def create_adj_mat(self):
         # Create a df version of the graph for merging
         G_df = pd.DataFrame(self.G.edges(), columns=['TF', 'target'])
 
@@ -86,10 +90,11 @@ class MLP(torch.nn.Module):
 
     def forward(self, x):
         if self.activation == "ReLU":
-           x = self.network(x)
-           dim = x.size(1) // 2
-           return torch.cat((self.relu(x[:, :dim]), x[:, dim:]), dim=1)
+            x = self.network(x)
+            dim = x.size(1) // 2
+            return torch.cat((self.relu(x[:, :dim]), x[:, dim:]), dim=1)
         return self.network(x)
+
 
 # GNN architecture 1
 class GNN_1(torch.nn.Module):
@@ -98,6 +103,7 @@ class GNN_1(torch.nn.Module):
     at the end of the forward call.
 
     """
+
     def __init__(self, num_feats, num_genes, num_layers, hidden_size,
                  embed_size, GNN):
         super(GNN_1, self).__init__()
@@ -111,7 +117,7 @@ class GNN_1(torch.nn.Module):
         for l in range(self.mp_layers):
             layer = Sequential(
                 Linear(hidden_size, hidden_size),
-                nn.LeakyReLU(), 
+                nn.LeakyReLU(),
                 Linear(hidden_size, hidden_size)
             )
             if GNN == 'GIN':
@@ -150,7 +156,7 @@ class GNN_2(torch.nn.Module):
         elif GNN == 'GAT':
             self.conv1 = GATConv(num_feats, hidden_size)
             self.conv2 = GATConv(hidden_size, hidden_size)
-            #self.conv3 = GATConv(hidden_size, hidden_size)
+            # self.conv3 = GATConv(hidden_size, hidden_size)
         self.lin = Linear(hidden_size, embed_size)
 
     def forward(self, data):
@@ -159,8 +165,8 @@ class GNN_2(torch.nn.Module):
         x = self.conv1(x, edge_index)
         x = x.relu()
         x = self.conv2(x, edge_index)
-        #x = x.relu()
-        #x = self.conv3(x, edge_index)
+        # x = x.relu()
+        # x = self.conv3(x, edge_index)
         x = self.lin(x)
 
         x = F.dropout(x, p=0.5, training=self.training)
@@ -170,14 +176,16 @@ class GNN_2(torch.nn.Module):
 
 class GNN_node_specific(torch.nn.Module):
     """
+    TODO very memomry inefficient implementation that doesn't work right now
     Node specific GNN
     (i) [GNN] message passing over gene-gene graph with expression and
     perturbations together represented as two dimensional node features
     FOR EACH NODE separately
     """
+
     def __init__(self, num_node_features, gene_list, node_hidden_size,
                  node_embed_size, ae_num_layers, ae_hidden_size, GNN,
-                 encode=True):
+                 device, encode=True):
         super(GNN_node_specific, self).__init__()
 
         num_genes = 1
@@ -186,18 +194,23 @@ class GNN_node_specific(torch.nn.Module):
         self.node_GNN = {}
         for idx, _ in enumerate(gene_list):
             self.node_GNN[idx] = GNN_2(num_node_features, num_genes,
-                           node_hidden_size, node_embed_size, GNN=GNN)
+                                       node_hidden_size, node_embed_size,
+                                       GNN=GNN).to(device)
 
         self.encode = encode
         self.encoder = MLP(
-            [ae_input_size] + [ae_hidden_size] * ae_num_layers + [ae_hidden_size])
+            [ae_input_size] + [ae_hidden_size] * ae_num_layers + [
+                ae_hidden_size])
         self.decoder = MLP(
             [ae_hidden_size] + [ae_hidden_size] * ae_num_layers + [num_genes],
             last_layer_act='linear')
 
-    def forward(self, x):
+    def forward(self, data):
+        # Run the input through all (node-specific) GNNs
+        x = [self.node_GNN[idx](data) for idx in range(len(self.node_GNN))]
 
-        x = [self.node_GNN[idx](g) for idx, g in enumerate(x)]
+        # Pass gradients only through the output for each node
+        # out =
 
         if self.encode:
             encoded = self.encoder(x)
@@ -214,6 +227,7 @@ class GNN_AE(torch.nn.Module):
     (ii) [AE] "auto-encoder" to convert concatenated node embeddings to post
     perturbation expression state
     """
+
     def __init__(self, num_node_features, num_genes,
                  gnn_num_layers, node_hidden_size, node_embed_size,
                  ae_num_layers, ae_hidden_size, GNN, GNN_arch=2,
@@ -221,16 +235,17 @@ class GNN_AE(torch.nn.Module):
         super(GNN_AE, self).__init__()
 
         ae_input_size = node_embed_size * num_genes
-        self.encode=encode
+        self.encode = encode
         if GNN_arch == 1:
             self.GNN = GNN_1(num_node_features, num_genes, gnn_num_layers,
-                           node_hidden_size, node_embed_size, GNN=GNN)
+                             node_hidden_size, node_embed_size, GNN=GNN)
         elif GNN_arch == 2:
             self.GNN = GNN_2(num_node_features, num_genes,
-                           node_hidden_size, node_embed_size, GNN=GNN)
+                             node_hidden_size, node_embed_size, GNN=GNN)
 
         self.encoder = MLP(
-            [ae_input_size] + [ae_hidden_size] * ae_num_layers + [ae_hidden_size])
+            [ae_input_size] + [ae_hidden_size] * ae_num_layers + [
+                ae_hidden_size])
         self.decoder = MLP(
             [ae_hidden_size] + [ae_hidden_size] * ae_num_layers + [num_genes],
             last_layer_act='linear')

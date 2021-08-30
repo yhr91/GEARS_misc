@@ -24,6 +24,7 @@ def train(model, train_loader, val_loader, args, device="cpu"):
         num_graphs = 0
         for itr, batch in enumerate(train_loader):  ## Change
             batch.to(device)
+            model.to(device)
             optimizer.zero_grad()
             pred = model(batch)
             loss = model.loss(pred, batch.y, batch.pert, args['pert_loss_wt'])
@@ -84,11 +85,6 @@ def evaluate(loader, model, device='cuda', num_de_idx=20):
         batch.to(device)
         results = {}
         pert_cat.extend(batch.pert)
-
-        if batch.de_idx is not None:
-            non_ctrl_idx = np.where([np.sum(d != None) for d in batch.de_idx])[0]
-        else:
-            print('here')
 
         with torch.no_grad():
             p = model(batch)
@@ -172,7 +168,7 @@ def trainer(args):
     gene_list = [f for f in adata.var.gene_symbols.values]
     args['gene_list'] = gene_list
     num_genes = len(gene_list)
-    args['modelname'] = args['fname'].split('/')[-1].split('.h5ad')[0]
+    args['modelname'] = args['fname'].split('/')[-1].split('.h5ad')[0] + 'test'
 
     try:
         args['num_ctrl_samples'] = adata.uns['num_ctrl_samples']
@@ -183,7 +179,7 @@ def trainer(args):
 
     # Set up data loaders
     l_model = linear_model(args)
-    pertdl = PertDataloader(adata, l_model.G, args)
+    pertdl = PertDataloader(adata, l_model.G, l_model.read_weights, args)
 
     # TODO this should be computed
     num_node_features = 2
@@ -202,6 +198,7 @@ def trainer(args):
                                       args['ae_num_layers'],
                                       args['ae_hidden_size'],
                                       GNN=args['GNN'],
+                                      device=args['device'],
                                       encode=args['encode']).to(args["device"])
         else:
             model = GNN_AE(num_node_features, num_genes,
@@ -251,6 +248,7 @@ def parse_arguments():
     parser.add_argument('--decoder_activation', type=str, default='linear')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--binary_pert', type=bool, default=True)
+    parser.add_argument('--edge_features', type=bool, default=True)
     parser.add_argument('--workers', type=int, default=1)
 
     # network arguments
