@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import networkx as nx
 
-from torch_geometric.nn import GINConv
+from torch_geometric.nn import GINConv, GCNConv, GATConv
 from torch.nn import Sequential, Linear, ReLU
 import pandas as pd
 
@@ -14,9 +14,12 @@ from flow import get_graph, get_expression_data,\
             add_weight, I_TF, get_TFs, solve,\
             solve_parallel, get_expression_lambda
 
+# Helpers
+def weighted_mse_loss(input, target, weight):
+    sample_mean = torch.mean((input - target) ** 2, 1)
+    return torch.mean(weight * sample_mean)
 
 # Create adjacency matrix for computation
-
 class linear_model():
     def __init__(self, args):
         self.TFs = get_TFs(args['species'])
@@ -88,16 +91,16 @@ class MLP(torch.nn.Module):
            return torch.cat((self.relu(x[:, :dim]), x[:, dim:]), dim=1)
         return self.network(x)
 
-
-class GIN(torch.nn.Module):
+# GNN architecture 1
+class GNN_1(torch.nn.Module):
     """
     Creates node level embeddings. All nodes for each graph are concatenated
     at the end of the forward call.
 
     """
     def __init__(self, num_feats, num_genes, num_layers, hidden_size,
-                 embed_size):
-        super(GIN, self).__init__()
+                 embed_size, GNN):
+        super(GNN_1, self).__init__()
         self.mp_layers = num_layers
         self.pre_mp = nn.Linear(num_feats, hidden_size)
         self.convs = nn.ModuleList()
@@ -111,7 +114,8 @@ class GIN(torch.nn.Module):
                 nn.LeakyReLU(), 
                 Linear(hidden_size, hidden_size)
             )
-            self.convs.append(GINConv(layer))
+            if GNN == 'GIN':
+                self.convs.append(GINConv(layer))
             self.bns.append(nn.BatchNorm1d(hidden_size))
         self.post_mp = Sequential(
             nn.Linear(hidden_size, hidden_size),
@@ -132,6 +136,76 @@ class GIN(torch.nn.Module):
         return torch.stack(x)
 
 
+# GNN architecture 2
+class GNN_2(torch.nn.Module):
+    def __init__(self, num_feats, num_genes, hidden_size, embed_size, GNN):
+        super(GNN_2, self).__init__()
+        torch.manual_seed(12345)
+        self.num_genes = num_genes
+        self.embed_size = embed_size
+        if GNN == 'GCN':
+            self.conv1 = GCNConv(num_feats, hidden_size)
+            self.conv2 = GCNConv(hidden_size, hidden_size)
+            self.conv3 = GCNConv(hidden_size, hidden_size)
+        elif GNN == 'GAT':
+            self.conv1 = GATConv(num_feats, hidden_size)
+            self.conv2 = GATConv(hidden_size, hidden_size)
+            #self.conv3 = GATConv(hidden_size, hidden_size)
+        self.lin = Linear(hidden_size, embed_size)
+
+    def forward(self, data):
+        x, edge_index, batch = data.x, data.edge_index, data.batch
+        # 1. Obtain node embeddings
+        x = self.conv1(x, edge_index)
+        x = x.relu()
+        x = self.conv2(x, edge_index)
+        #x = x.relu()
+        #x = self.conv3(x, edge_index)
+        x = self.lin(x)
+
+        x = F.dropout(x, p=0.5, training=self.training)
+        x = torch.split(torch.flatten(x), self.num_genes * self.embed_size)
+        return torch.stack(x)
+
+
+class GNN_node_specific(torch.nn.Module):
+    """
+    Node specific GNN
+    (i) [GNN] message passing over gene-gene graph with expression and
+    perturbations together represented as two dimensional node features
+    FOR EACH NODE separately
+    """
+    def __init__(self, num_node_features, gene_list, node_hidden_size,
+                 node_embed_size, ae_num_layers, ae_hidden_size, GNN,
+                 encode=True):
+        super(GNN_node_specific, self).__init__()
+
+        num_genes = 1
+        ae_input_size = node_embed_size * num_genes
+
+        self.node_GNN = {}
+        for idx, _ in enumerate(gene_list):
+            self.node_GNN[idx] = GNN_2(num_node_features, num_genes,
+                           node_hidden_size, node_embed_size, GNN=GNN)
+
+        self.encode = encode
+        self.encoder = MLP(
+            [ae_input_size] + [ae_hidden_size] * ae_num_layers + [ae_hidden_size])
+        self.decoder = MLP(
+            [ae_hidden_size] + [ae_hidden_size] * ae_num_layers + [num_genes],
+            last_layer_act='linear')
+
+    def forward(self, x):
+
+        x = [self.node_GNN[idx](g) for idx, g in enumerate(x)]
+
+        if self.encode:
+            encoded = self.encoder(x)
+            x = self.decoder(encoded)
+
+        return x
+
+
 class GNN_AE(torch.nn.Module):
     """
     GNN + AE Model consisting of two steps:
@@ -142,12 +216,19 @@ class GNN_AE(torch.nn.Module):
     """
     def __init__(self, num_node_features, num_genes,
                  gnn_num_layers, node_hidden_size, node_embed_size,
-                 ae_num_layers, ae_hidden_size):
+                 ae_num_layers, ae_hidden_size, GNN, GNN_arch=2,
+                 encode=True):
         super(GNN_AE, self).__init__()
 
         ae_input_size = node_embed_size * num_genes
-        self.GNN = GIN(num_node_features, num_genes, gnn_num_layers,
-                       node_hidden_size, node_embed_size)
+        self.encode=encode
+        if GNN_arch == 1:
+            self.GNN = GNN_1(num_node_features, num_genes, gnn_num_layers,
+                           node_hidden_size, node_embed_size, GNN=GNN)
+        elif GNN_arch == 2:
+            self.GNN = GNN_2(num_node_features, num_genes,
+                           node_hidden_size, node_embed_size, GNN=GNN)
+
         self.encoder = MLP(
             [ae_input_size] + [ae_hidden_size] * ae_num_layers + [ae_hidden_size])
         self.decoder = MLP(
@@ -155,11 +236,20 @@ class GNN_AE(torch.nn.Module):
             last_layer_act='linear')
 
     def forward(self, x):
-        post_gnn = self.GNN(x)
-        encoded = self.encoder(post_gnn)
-        x = self.decoder(encoded)
+        x = self.GNN(x)
+
+        if self.encode:
+            encoded = self.encoder(x)
+            x = self.decoder(encoded)
 
         return x
 
-    def loss(self, pred, y):
-        return F.mse_loss(pred, y)
+    def loss(self, pred, y, perts, weight=1):
+
+        # Weigh the loss for perturbations
+        weights = np.ones(len(pred))
+        non_ctrl_idx = np.where([('ctrl' != p) for p in perts])[0]
+        weights[non_ctrl_idx] = weight
+
+        loss = weighted_mse_loss(pred, y, torch.Tensor(weights).to(pred.device))
+        return loss

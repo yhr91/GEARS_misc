@@ -4,8 +4,8 @@ import scanpy as sc
 import numpy as np
 
 import argparse
-from model import GNN_AE, linear_model
-from data import create_dataloaders
+from model import GNN_AE, linear_model, GNN_node_specific
+from data import PertDataloader
 from sklearn.metrics import r2_score
 from sklearn.metrics import mean_squared_error as mse
 from copy import deepcopy
@@ -14,14 +14,7 @@ import sys
 sys.path.append('/dfs/user/yhr/cell_reprogram/model/')
 
 
-def train(train_loader, val_loader, args,
-                    num_node_features, device="cpu"):
-    num_genes=5000 ## TODO this should be computed
-    model = GNN_AE(num_node_features, num_genes,
-                   args['gnn_num_layers'], args['node_hidden_size'],
-                   args['node_embed_size'], args['ae_num_layers'],
-                   args['ae_hidden_size']
-                   ).to(device)
+def train(model, train_loader, val_loader, args, device="cpu"):
     optimizer = optim.Adam(model.parameters(), lr=args['lr'], weight_decay=5e-4)
     best_model = None
     min_val = np.inf
@@ -33,7 +26,7 @@ def train(train_loader, val_loader, args,
             batch.to(device)
             optimizer.zero_grad()
             pred = model(batch)
-            loss = model.loss(pred, batch.y)
+            loss = model.loss(pred, batch.y, batch.pert, args['pert_loss_wt'])
             loss.backward()
             optimizer.step()
             total_loss += loss.item() * batch.num_graphs
@@ -178,6 +171,7 @@ def trainer(args):
     adata = sc.read_h5ad(args['fname'])
     gene_list = [f for f in adata.var.gene_symbols.values]
     args['gene_list'] = gene_list
+    num_genes = len(gene_list)
     args['modelname'] = args['fname'].split('/')[-1].split('.h5ad')[0]
 
     try:
@@ -189,20 +183,52 @@ def trainer(args):
 
     # Set up data loaders
     l_model = linear_model(args)
-    loaders = create_dataloaders(adata, l_model.G, args)
+    pertdl = PertDataloader(adata, l_model.G, args)
+
+    # TODO this should be computed
+    num_node_features = 2
 
     # Train a model
-    best_model = train(loaders['train_loader'], loaders['val_loader'],
-                       args, num_node_features=2,  device=args["device"])
+    all_test_pert_res = []
+    # Run training 3 times to measure variability of result
+    # TODO check if random seeds need to be changed here
+    for itr in range(args['num_itr']):
 
-    test_res = evaluate(loaders['ood_loader'], best_model, args["device"])
-    test_metrics, test_pert_res = compute_metrics(test_res)
+        # Define model
+        if args['GNN_node_specific']:
+            model = GNN_node_specific(num_node_features, gene_list,
+                                      args['node_hidden_size'],
+                                      args['node_embed_size'],
+                                      args['ae_num_layers'],
+                                      args['ae_hidden_size'],
+                                      GNN=args['GNN'],
+                                      encode=args['encode']).to(args["device"])
+        else:
+            model = GNN_AE(num_node_features, num_genes,
+                       args['gnn_num_layers'], args['node_hidden_size'],
+                       args['node_embed_size'], args['ae_num_layers'],
+                       args['ae_hidden_size'], GNN=args['GNN'],
+                       encode=args['encode']).to(args["device"])
 
-    log = "Final best performing model: Test_DE: {:.4f}, R2 {:.4f} "
-    print(log.format(test_metrics['mse_de'], test_metrics['r2_de']))
+        best_model = train(model, pertdl.loaders['train_loader'],
+                           pertdl.loaders['val_loader'],
+                           args, device=args["device"])
+
+        test_res = evaluate(pertdl.loaders['ood_loader'],
+                            best_model, args["device"])
+        test_metrics, test_pert_res = compute_metrics(test_res)
+        all_test_pert_res.append(test_pert_res)
+
+        log = "Final best performing model" + str(itr) +\
+              ": Test_DE: {:.4f}, R2 {:.4f} "
+        print(log.format(test_metrics['mse_de'], test_metrics['r2_de']))
 
     # Save model outputs and best model
-    np.save('./saved_metrics/'+args['modelname'], test_pert_res)
+    np.save('./saved_metrics/'+args['modelname'] + '_'+ args['exp_name'],
+            all_test_pert_res)
+    np.save('./saved_args/' + args['modelname'] + '_'+ args['exp_name'], args)
+    torch.save(best_model, './saved_models/full_model_'+args['modelname']+
+               '_'+ args['exp_name'])
     torch.save(best_model.state_dict(), './saved_models/'+args['modelname']+
                '_'+ args['exp_name'])
 
@@ -221,11 +247,11 @@ def parse_arguments():
     parser.add_argument('--cell_type_key', type=str, default="cell_type")
     parser.add_argument('--split_key', type=str, default="split_yhr_TFcombos")
     parser.add_argument('--loss_ae', type=str, default='gauss')
-    parser.add_argument('--doser_type', type=str, default='sigm')
     parser.add_argument('--batch_size', type=int, default=100)
     parser.add_argument('--decoder_activation', type=str, default='linear')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--binary_pert', type=bool, default=True)
+    parser.add_argument('--workers', type=int, default=1)
 
     # network arguments
     parser.add_argument('--regulon_name', type=str,
@@ -235,23 +261,24 @@ def parse_arguments():
                     '/learnt_weights/Norman2019_ctrl_only_learntweights.csv')
 
     # training arguments
-    parser.add_argument('--device', type=str, default='cuda:4')
+    parser.add_argument('--device', type=str, default='cuda:5')
     parser.add_argument('--max_epochs', type=int, default=10)
     parser.add_argument('--max_minutes', type=int, default=50)
     parser.add_argument('--patience', type=int, default=20)
     parser.add_argument('--checkpoint_freq', type=int, default=20)
     parser.add_argument('--lr', type=float, default=3e-4)
-    parser.add_argument('--node_hidden_size', type=int, default=16)
-    parser.add_argument('--node_embed_size', type=int, default=8)
+    parser.add_argument('--node_hidden_size', type=int, default=8)
+    parser.add_argument('--node_embed_size', type=int, default=1)
     parser.add_argument('--ae_hidden_size', type=int, default=512)
     parser.add_argument('--gnn_num_layers', type=int, default=4)
     parser.add_argument('--ae_num_layers', type=int, default=4)
-    parser.add_argument('--exp_name', type=str, default='test')
-    parser.add_argument('--num_itr', type=int, default=1)
-    parser.add_argument('--workers', type=int, default=1)
+    parser.add_argument('--exp_name', type=str, default='test2')
+    parser.add_argument('--num_itr', type=int, default=3)
+    parser.add_argument('--pert_loss_wt', type=int, default=1)
+    parser.add_argument('--GNN', type=str, default='GCN')
+    parser.add_argument('--encode', type=bool, default=False)
+    parser.add_argument('--GNN_node_specific', type=bool, default=False)
 
-    # output arguments
-    parser.add_argument('--save_dir', type=str, default='./test/')
     return dict(vars(parser.parse_args()))
 
 
