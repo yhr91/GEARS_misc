@@ -87,6 +87,8 @@ class PertDataloader():
         for i, p in enumerate(pert_idx):
             if self.binary_pert:
                 sign = np.sign(adata_.X[0, p] - self.ctrl_adata.X[0, p])
+                if sign == 0:
+                    sign = 1
                 pert_idx[i] = sign * pert_idx[i]
 
         return pert_idx
@@ -107,6 +109,9 @@ class PertDataloader():
             pert_feats = np.expand_dims(pert_feats, 0)
             feature_mat = torch.Tensor(np.concatenate([X, pert_feats])).T
         else:
+            if pert_idx is not None:
+                for p in pert_idx:
+                    X[0][int(p)] += 1.0
             feature_mat = torch.Tensor(X).T
 
         # Set up edges
@@ -139,6 +144,7 @@ class PertDataloader():
             if len(edge_attr) == 0:
                 edge_index_ = [(0,0)]
                 edge_attr = [0]
+
             edge_attr = torch.Tensor(edge_attr).unsqueeze(1)
         else:
             edge_attr = None

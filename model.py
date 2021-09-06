@@ -284,24 +284,22 @@ class simple_GNN(torch.nn.Module):
     GNN for debugging
     """
 
-    def __init__(self, num_feats, hidden_size, num_genes, embed_size):
+    def __init__(self, num_feats, num_genes, node_embed_size):
         super(simple_GNN, self).__init__()
 
         self.num_genes = num_genes
-        self.embed_size = embed_size
-        self.conv1 = GraphConv(num_feats, hidden_size)
+        self.node_embed_size = node_embed_size
+        self.conv1 = GraphConv(num_feats, node_embed_size)
 
     def forward(self, data):
         x, edge_index, edge_attr, batch = data.x, data.edge_index, \
                                           data.edge_attr, data.batch
 
         # 1. Obtain node embeddings
-        out = self.conv1(x, edge_index, edge_weight=edge_attr)
+        out = self.conv1(x, edge_index=edge_index, edge_weight=edge_attr)
 
-        # Assumed differential loss
-        out = out[:,0] - x[:, 0]
-
-        out = torch.split(torch.flatten(out), self.num_genes * self.embed_size)
+        out = torch.split(torch.flatten(out), self.num_genes *
+                          self.node_embed_size)
         return torch.stack(out)
 
     def loss(self, pred, y, perts, weight=1):

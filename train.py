@@ -200,7 +200,7 @@ def trainer(args):
     pertdl = PertDataloader(adata, l_model.G, l_model.read_weights, args)
 
     # TODO this should be computed
-    num_node_features = 2
+    num_node_features = 1
 
     # Train a model
     all_test_pert_res = []
@@ -219,8 +219,8 @@ def trainer(args):
                                       device=args['device'],
                                       encode=args['encode']).to(args["device"])
         elif args['GNN_simple']:
-            model = simple_GNN(num_node_features, args['ae_hidden_size'],
-                               args['num_genes'], args['node_embed_size'])
+            model = simple_GNN(num_node_features, args['num_genes'],
+                               args['node_embed_size'])
         else:
             model = GNN_AE(num_node_features, args['num_genes'],
                        args['gnn_num_layers'], args['node_hidden_size'],
@@ -279,7 +279,7 @@ def parse_arguments():
                     '/learnt_weights/Norman2019_ctrl_only_learntweights.csv')
 
     # training arguments
-    parser.add_argument('--device', type=str, default='cuda:5')
+    parser.add_argument('--device', type=str, default='cuda:4')
     parser.add_argument('--max_epochs', type=int, default=20)
     parser.add_argument('--max_minutes', type=int, default=50)
     parser.add_argument('--patience', type=int, default=20)
@@ -297,9 +297,9 @@ def parse_arguments():
     parser.add_argument('--encode', type=bool, default=False)
     parser.add_argument('--GNN_node_specific', type=bool, default=False)
     parser.add_argument('--GNN_simple', type=bool, default=True)
-    parser.add_argument('--diff_loss', type=bool, default=True)
+    parser.add_argument('--diff_loss', type=bool, default=False)
     parser.add_argument('--edge_filter', type=bool, default=True)
-    parser.add_argument('--data_suffix', type=str, default='_test')
+    parser.add_argument('--data_suffix', type=str, default='_nopert_feats')
     parser.add_argument('--pert_feats', type=bool, default=False)
 
     return dict(vars(parser.parse_args()))
