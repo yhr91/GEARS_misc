@@ -98,30 +98,52 @@ class PertDataloader():
         graph (e.g coexpression) to create a cell specific graph for control
         """
 
-        pert_feats = np.zeros(len(X[0]))
-        if pert_idx is not None:
-            for p in pert_idx:
-                pert_feats[int(np.abs(p))] = np.sign(p)
-        pert_feats = np.expand_dims(pert_feats, 0)
-        feature_mat = torch.Tensor(np.concatenate([X, pert_feats])).T
+        if self.args['pert_feats']:
+            # If perturbations will be represented as node features
+            pert_feats = np.zeros(len(X[0]))
+            if pert_idx is not None:
+                for p in pert_idx:
+                    pert_feats[int(np.abs(p))] = np.sign(p)
+            pert_feats = np.expand_dims(pert_feats, 0)
+            feature_mat = torch.Tensor(np.concatenate([X, pert_feats])).T
+        else:
+            feature_mat = torch.Tensor(X).T
 
         # Set up edges
-        edge_index_ = [(self.node_map[e[0]], self.node_map[e[1]]) for e in
-                      self.G.edges]
-        edge_index = torch.tensor(edge_index_, dtype=torch.long).T
+        if self.args['edge_filter']:
+            if pert_idx is not None:
+                edge_index_ = [(self.node_map[e[0]], self.node_map[e[1]]) for e in
+                              self.G.edges if self.node_map[e[0]] in pert_idx]
+            else:
+                edge_index_ = []
+        else:
+            edge_index_ = [(self.node_map[e[0]], self.node_map[e[1]]) for e in
+                          self.G.edges]
 
         # Set edge features
-        if self.args['edge_features']:
+        if self.args['edge_attr']:
             edge_attr = self.weights.copy()
             edge_attr.index = edge_attr.index.map(self.node_map)
             edge_attr['target'] = edge_attr['target'].map(self.node_map)
             edges_df = pd.DataFrame(edge_index_, columns=['TF', 'target'])
+
+            # Keep only those edges that have weights assigned
             edge_attr = edge_attr.reset_index().merge(edges_df,
-                                    on=['TF', 'target'], how='outer')
-            edge_attr = edge_attr.fillna(value=0)['importance'].values
+                                    on=['TF', 'target'], how='inner')
+            edge_index_ = [(s,t) for s,t in zip(edge_attr['TF'].values,
+                                  edge_attr['target'].values)]
+            edge_attr = edge_attr['importance'].values
+            assert len(edge_attr) == len(edge_index_)
+
+            # This prevents PyG from throwing errors if it finds no edges
+            if len(edge_attr) == 0:
+                edge_index_ = [(0,0)]
+                edge_attr = [0]
             edge_attr = torch.Tensor(edge_attr).unsqueeze(1)
         else:
             edge_attr = None
+
+        edge_index = torch.tensor(edge_index_, dtype=torch.long).T
 
         # Create graph dataset
         return Data(x=feature_mat, edge_index=edge_index, edge_attr=edge_attr,

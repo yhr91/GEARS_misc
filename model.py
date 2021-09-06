@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import networkx as nx
 
-from torch_geometric.nn import GINConv, GCNConv, GATConv
+from torch_geometric.nn import GINConv, GCNConv, GATConv, GraphConv
 from torch.nn import Sequential, Linear, ReLU
 import pandas as pd
 
@@ -153,6 +153,9 @@ class GNN_2(torch.nn.Module):
             self.conv1 = GCNConv(num_feats, hidden_size)
             self.conv2 = GCNConv(hidden_size, hidden_size)
             self.conv3 = GCNConv(hidden_size, hidden_size)
+        elif GNN == 'GraphConv':
+            self.conv1 = GraphConv(num_feats, hidden_size)
+            self.conv2 = GraphConv(hidden_size, hidden_size)
         elif GNN == 'GAT':
             self.conv1 = GATConv(num_feats, hidden_size)
             self.conv2 = GATConv(hidden_size, hidden_size)
@@ -162,17 +165,22 @@ class GNN_2(torch.nn.Module):
     def forward(self, data):
         x, edge_index, edge_attr, batch = data.x, data.edge_index, \
                                           data.edge_attr, data.batch
+
         # 1. Obtain node embeddings
-        x = self.conv1(x, edge_index, edge_weight=edge_attr)
-        x = x.relu()
-        x = self.conv2(x, edge_index, edge_weight=edge_attr)
+        out = self.conv1(x, edge_index, edge_weight=edge_attr)
+        #x = x.relu()
+        #x = self.conv2(x, edge_index, edge_weight=edge_attr)
         # x = x.relu()
         # x = self.conv3(x, edge_index)
-        x = self.lin(x)
+        # out = self.lin(out)
 
-        x = F.dropout(x, p=0.5, training=self.training)
-        x = torch.split(torch.flatten(x), self.num_genes * self.embed_size)
-        return torch.stack(x)
+        #x = F.dropout(x, p=0.5, training=self.training)
+
+        # Assumed differential loss
+        out = out[:,0] - x[:, 0]
+
+        out = torch.split(torch.flatten(out), self.num_genes * self.embed_size)
+        return torch.stack(out)
 
 
 class GNN_node_specific(torch.nn.Module):
@@ -259,6 +267,42 @@ class GNN_AE(torch.nn.Module):
             x = self.decoder(encoded)
 
         return x
+
+    def loss(self, pred, y, perts, weight=1):
+
+        # Weigh the loss for perturbations
+        weights = np.ones(len(pred))
+        non_ctrl_idx = np.where([('ctrl' != p) for p in perts])[0]
+        weights[non_ctrl_idx] = weight
+
+        loss = weighted_mse_loss(pred, y, torch.Tensor(weights).to(pred.device))
+        return loss
+
+
+class simple_GNN(torch.nn.Module):
+    """
+    GNN for debugging
+    """
+
+    def __init__(self, num_feats, hidden_size, num_genes, embed_size):
+        super(simple_GNN, self).__init__()
+
+        self.num_genes = num_genes
+        self.embed_size = embed_size
+        self.conv1 = GraphConv(num_feats, hidden_size)
+
+    def forward(self, data):
+        x, edge_index, edge_attr, batch = data.x, data.edge_index, \
+                                          data.edge_attr, data.batch
+
+        # 1. Obtain node embeddings
+        out = self.conv1(x, edge_index, edge_weight=edge_attr)
+
+        # Assumed differential loss
+        out = out[:,0] - x[:, 0]
+
+        out = torch.split(torch.flatten(out), self.num_genes * self.embed_size)
+        return torch.stack(out)
 
     def loss(self, pred, y, perts, weight=1):
 

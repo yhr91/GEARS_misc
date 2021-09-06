@@ -4,7 +4,7 @@ import scanpy as sc
 import numpy as np
 
 import argparse
-from model import GNN_AE, linear_model, GNN_node_specific
+from model import GNN_AE, linear_model, GNN_node_specific, simple_GNN
 from data import PertDataloader
 from sklearn.metrics import r2_score
 from sklearn.metrics import mean_squared_error as mse
@@ -27,7 +27,15 @@ def train(model, train_loader, val_loader, args, device="cpu"):
             model.to(device)
             optimizer.zero_grad()
             pred = model(batch)
-            loss = model.loss(pred, batch.y, batch.pert, args['pert_loss_wt'])
+
+            if args['diff_loss']:
+                x = torch.stack(torch.split(batch.x[:,0],
+                            5000 * args['node_embed_size']))
+                y = batch.y - x
+            else:
+                y = batch.y
+
+            loss = model.loss(pred, y, batch.pert, args['pert_loss_wt'])
             loss.backward()
             optimizer.step()
             total_loss += loss.item() * batch.num_graphs
@@ -36,8 +44,8 @@ def train(model, train_loader, val_loader, args, device="cpu"):
         total_loss /= num_graphs
 
         # Evaluate model performance on train and val set
-        train_res = evaluate(train_loader, model, device)
-        val_res = evaluate(val_loader, model, device)
+        train_res = evaluate(train_loader, model, args)
+        val_res = evaluate(val_loader, model, args)
         train_metrics, _ = compute_metrics(train_res)
         val_metrics, _ = compute_metrics(val_res)
 
@@ -68,7 +76,7 @@ def r2_loss(output, target):
     return r2
 
 
-def evaluate(loader, model, device='cuda', num_de_idx=20):
+def evaluate(loader, model, args, num_de_idx=20):
     """
     Run model in inference mode using a given data loader
     """
@@ -82,13 +90,22 @@ def evaluate(loader, model, device='cuda', num_de_idx=20):
     results = {}
 
     for batch in loader:
-        batch.to(device)
+        batch.to(args['device'])
         results = {}
         pert_cat.extend(batch.pert)
 
         with torch.no_grad():
+
             p = model(batch)
             t = batch.y
+
+            # TODO Can remove this after changing dataloader
+            if args['diff_loss']:
+                x = torch.stack(torch.split(batch.x[:, 0],
+                                            5000 * args['node_embed_size']))
+                p += x
+            else:
+                pass
 
             pred.extend(p)
             truth.extend(t)
@@ -100,8 +117,8 @@ def evaluate(loader, model, device='cuda', num_de_idx=20):
                     truth_de.append(t[itr, de_idx])
 
                 else:
-                    pred_de.append([torch.zeros(num_de_idx).to(device)])
-                    truth_de.append([torch.zeros(num_de_idx).to(device)])
+                    pred_de.append([torch.zeros(num_de_idx).to(args['device'])])
+                    truth_de.append([torch.zeros(num_de_idx).to(args['device'])])
 
     # all genes
     results['pert_cat'] = np.array(pert_cat)
@@ -167,8 +184,9 @@ def trainer(args):
     adata = sc.read_h5ad(args['fname'])
     gene_list = [f for f in adata.var.gene_symbols.values]
     args['gene_list'] = gene_list
-    num_genes = len(gene_list)
-    args['modelname'] = args['fname'].split('/')[-1].split('.h5ad')[0]
+    args['num_genes'] = len(gene_list)
+    args['modelname'] = args['fname'].split('/')[-1].split('.h5ad')[0] + \
+                        args['data_suffix']
 
     try:
         args['num_ctrl_samples'] = adata.uns['num_ctrl_samples']
@@ -200,8 +218,11 @@ def trainer(args):
                                       GNN=args['GNN'],
                                       device=args['device'],
                                       encode=args['encode']).to(args["device"])
+        elif args['GNN_simple']:
+            model = simple_GNN(num_node_features, args['ae_hidden_size'],
+                               args['num_genes'], args['node_embed_size'])
         else:
-            model = GNN_AE(num_node_features, num_genes,
+            model = GNN_AE(num_node_features, args['num_genes'],
                        args['gnn_num_layers'], args['node_hidden_size'],
                        args['node_embed_size'], args['ae_num_layers'],
                        args['ae_hidden_size'], GNN=args['GNN'],
@@ -211,8 +232,7 @@ def trainer(args):
                            pertdl.loaders['val_loader'],
                            args, device=args["device"])
 
-        test_res = evaluate(pertdl.loaders['ood_loader'],
-                            best_model, args["device"])
+        test_res = evaluate(pertdl.loaders['ood_loader'], best_model, args)
         test_metrics, test_pert_res = compute_metrics(test_res)
         all_test_pert_res.append(test_pert_res)
 
@@ -238,7 +258,7 @@ def parse_arguments():
     # dataset arguments
     parser = argparse.ArgumentParser(description='Perturbation response')
     parser.add_argument('--fname', type=str,
-                        default='./datasets/Norman2019_prep_new_TFcombosin5k_nocombo_somesingle_worstde_numsamples_1.h5ad')
+                        default='./datasets/Norman2019_prep_new_TFcombosin5k_nocombo_somesingle_worstde_numsamples_1_new_method.h5ad')
     parser.add_argument('--perturbation_key', type=str, default="condition")
     parser.add_argument('--species', type=str, default="human")
     parser.add_argument('--cell_type_key', type=str, default="cell_type")
@@ -248,7 +268,7 @@ def parse_arguments():
     parser.add_argument('--decoder_activation', type=str, default='linear')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--binary_pert', type=bool, default=True)
-    parser.add_argument('--edge_features', type=bool, default=True)
+    parser.add_argument('--edge_attr', type=bool, default=True)
     parser.add_argument('--workers', type=int, default=1)
 
     # network arguments
@@ -260,12 +280,12 @@ def parse_arguments():
 
     # training arguments
     parser.add_argument('--device', type=str, default='cuda:5')
-    parser.add_argument('--max_epochs', type=int, default=10)
+    parser.add_argument('--max_epochs', type=int, default=20)
     parser.add_argument('--max_minutes', type=int, default=50)
     parser.add_argument('--patience', type=int, default=20)
     parser.add_argument('--checkpoint_freq', type=int, default=20)
-    parser.add_argument('--lr', type=float, default=3e-4)
-    parser.add_argument('--node_hidden_size', type=int, default=8)
+    parser.add_argument('--lr', type=float, default=0.001)
+    parser.add_argument('--node_hidden_size', type=int, default=1)
     parser.add_argument('--node_embed_size', type=int, default=1)
     parser.add_argument('--ae_hidden_size', type=int, default=512)
     parser.add_argument('--gnn_num_layers', type=int, default=4)
@@ -273,9 +293,14 @@ def parse_arguments():
     parser.add_argument('--exp_name', type=str, default='test2')
     parser.add_argument('--num_itr', type=int, default=3)
     parser.add_argument('--pert_loss_wt', type=int, default=1)
-    parser.add_argument('--GNN', type=str, default='GCN')
+    parser.add_argument('--GNN', type=str, default='GraphConv')
     parser.add_argument('--encode', type=bool, default=False)
     parser.add_argument('--GNN_node_specific', type=bool, default=False)
+    parser.add_argument('--GNN_simple', type=bool, default=True)
+    parser.add_argument('--diff_loss', type=bool, default=True)
+    parser.add_argument('--edge_filter', type=bool, default=True)
+    parser.add_argument('--data_suffix', type=str, default='_test')
+    parser.add_argument('--pert_feats', type=bool, default=False)
 
     return dict(vars(parser.parse_args()))
 
