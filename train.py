@@ -22,24 +22,16 @@ def train(model, train_loader, val_loader, args, device="cpu"):
         total_loss = 0
         model.train()
         num_graphs = 0
-        for itr, batch in enumerate(train_loader):  ## Change
+        for batch in train_loader:
             batch.to(device)
             model.to(device)
             optimizer.zero_grad()
             pred = model(batch)
-
-            if args['diff_loss']:
-                x = torch.stack(torch.split(batch.x[:,0],
-                            5000 * args['node_embed_size']))
-                y = batch.y - x
-            else:
-                y = batch.y
-
+            y = batch.y
             loss = model.loss(pred, y, batch.pert, args['pert_loss_wt'])
             loss.backward()
             optimizer.step()
             total_loss += loss.item() * batch.num_graphs
-            total_loss += loss.item()
             num_graphs += batch.num_graphs
         total_loss /= num_graphs
 
@@ -98,14 +90,6 @@ def evaluate(loader, model, args, num_de_idx=20):
 
             p = model(batch)
             t = batch.y
-
-            # TODO Can remove this after changing dataloader
-            if args['diff_loss']:
-                x = torch.stack(torch.split(batch.x[:, 0],
-                                            5000 * args['node_embed_size']))
-                p += x
-            else:
-                pass
 
             pred.extend(p)
             truth.extend(t)
@@ -220,7 +204,19 @@ def trainer(args):
                                       encode=args['encode']).to(args["device"])
         elif args['GNN_simple']:
             model = simple_GNN(num_node_features, args['num_genes'],
-                               args['node_embed_size'])
+                               args['node_embed_size'], args['loss_type'])
+
+            ## TODO Note: setting intialization manually here
+            state_dict = model.state_dict()
+            state_dict['conv1.lin_l.weight'] = \
+                torch.Tensor([1]).to(args['device']).unsqueeze(0)
+            state_dict['conv1.lin_l.bias'] = \
+                torch.Tensor([0]).to(args['device'])
+            state_dict['conv1.lin_r.weight'] = \
+                torch.Tensor([1]).to(args['device']).unsqueeze(0)
+
+            model.load_state_dict(state_dict)
+
         else:
             model = GNN_AE(num_node_features, args['num_genes'],
                        args['gnn_num_layers'], args['node_hidden_size'],
@@ -284,7 +280,7 @@ def parse_arguments():
     parser.add_argument('--max_minutes', type=int, default=50)
     parser.add_argument('--patience', type=int, default=20)
     parser.add_argument('--checkpoint_freq', type=int, default=20)
-    parser.add_argument('--lr', type=float, default=0.001)
+    parser.add_argument('--lr', type=float, default=5e-4)
     parser.add_argument('--node_hidden_size', type=int, default=1)
     parser.add_argument('--node_embed_size', type=int, default=1)
     parser.add_argument('--ae_hidden_size', type=int, default=512)
@@ -301,6 +297,7 @@ def parse_arguments():
     parser.add_argument('--edge_filter', type=bool, default=True)
     parser.add_argument('--data_suffix', type=str, default='_nopert_feats')
     parser.add_argument('--pert_feats', type=bool, default=False)
+    parser.add_argument('--loss_type', type=str, default='micro')
 
     return dict(vars(parser.parse_args()))
 

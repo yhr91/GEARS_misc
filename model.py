@@ -284,12 +284,15 @@ class simple_GNN(torch.nn.Module):
     GNN for debugging
     """
 
-    def __init__(self, num_feats, num_genes, node_embed_size):
+    def __init__(self, num_feats, num_genes, node_embed_size,
+                 loss_type='micro'):
         super(simple_GNN, self).__init__()
 
         self.num_genes = num_genes
         self.node_embed_size = node_embed_size
         self.conv1 = GraphConv(num_feats, node_embed_size)
+        self.lin = Linear(node_embed_size, node_embed_size)
+        self.loss_type = loss_type
 
     def forward(self, data):
         x, edge_index, edge_attr, batch = data.x, data.edge_index, \
@@ -298,16 +301,30 @@ class simple_GNN(torch.nn.Module):
         # 1. Obtain node embeddings
         out = self.conv1(x, edge_index=edge_index, edge_weight=edge_attr)
 
+        out = out.relu()
+        out = self.lin(out)
+
         out = torch.split(torch.flatten(out), self.num_genes *
                           self.node_embed_size)
         return torch.stack(out)
 
     def loss(self, pred, y, perts, weight=1):
 
-        # Weigh the loss for perturbations
-        weights = np.ones(len(pred))
-        non_ctrl_idx = np.where([('ctrl' != p) for p in perts])[0]
-        weights[non_ctrl_idx] = weight
+        # Micro average MSE
+        if self.loss_type == 'micro':
+            mse_p = torch.nn.MSELoss()
+            perts = np.array(perts)
+            losses = torch.tensor(0.0, requires_grad=True).to(pred.device)
+            for p in set(perts):
+                pred_p = pred[np.where(perts==p)[0]]
+                y_p = y[np.where(perts==p)[0]]
+                losses += mse_p(pred_p, y_p)
+            return losses/(len(set(perts)))
 
-        loss = weighted_mse_loss(pred, y, torch.Tensor(weights).to(pred.device))
-        return loss
+        else:
+            # Weigh the loss for perturbations
+            weights = np.ones(len(pred))
+            non_ctrl_idx = np.where([('ctrl' != p) for p in perts])[0]
+            weights[non_ctrl_idx] = weight
+            loss = weighted_mse_loss(pred, y, torch.Tensor(weights).to(pred.device))
+            return loss
