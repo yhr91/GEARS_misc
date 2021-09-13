@@ -4,7 +4,7 @@ import scanpy as sc
 import numpy as np
 
 import argparse
-from model import GNN_AE, linear_model, GNN_node_specific, simple_GNN
+from model import GNN_AE, linear_model, simple_GNN, simple_GAT
 from data import PertDataloader
 from sklearn.metrics import r2_score
 from sklearn.metrics import mean_squared_error as mse
@@ -14,38 +14,49 @@ import sys
 sys.path.append('/dfs/user/yhr/cell_reprogram/model/')
 
 
-def train(model, train_loader, val_loader, args, device="cpu"):
+def train(model, train_loader, val_loader, args, device="cpu", gene_idx=None):
     optimizer = optim.Adam(model.parameters(), lr=args['lr'], weight_decay=5e-4)
     best_model = None
     min_val = np.inf
+
     for epoch in range(args["max_epochs"]):
         total_loss = 0
         model.train()
         num_graphs = 0
         for batch in train_loader:
+
+            # Make correction to feature set
+            if gene_idx is not None and args['zero_target_node']:
+                x_idx = [(gene_idx + args['num_genes'] * itr)
+                         for itr in range(batch.num_graphs)]
+                batch.x[x_idx, :] = 0
+
             batch.to(device)
             model.to(device)
             optimizer.zero_grad()
             pred = model(batch)
             y = batch.y
+
+            # Direct gradients through only specific gene
+            if gene_idx is not None:
+                pred = pred[:,gene_idx]
+                y = y[:,gene_idx]
+
+            # Compute loss
             loss = model.loss(pred, y, batch.pert, args['pert_loss_wt'])
             loss.backward()
             optimizer.step()
             total_loss += loss.item() * batch.num_graphs
             num_graphs += batch.num_graphs
+
+        # Evaluate model performance on train and val set
         total_loss /= num_graphs
+        train_res = evaluate(train_loader, model, args, gene_idx=gene_idx)
+        val_res = evaluate(val_loader, model, args, gene_idx=gene_idx)
+        train_metrics, _ = compute_metrics(train_res, gene_idx=gene_idx)
+        val_metrics, _ = compute_metrics(val_res, gene_idx=gene_idx)
 
-        # Evaluate model performance on train and val set
-        train_res = evaluate(train_loader, model, args)
-        val_res = evaluate(val_loader, model, args)
-        train_metrics, _ = compute_metrics(train_res)
-        val_metrics, _ = compute_metrics(val_res)
-
-        if val_metrics['mse'] < min_val:
-            min_val = val_metrics['mse']
-            best_model = deepcopy(model)
-
-        # Evaluate model performance on train and val set
+        # Print epoch performance
         log = "Epoch {}: Train: {:.4f}, R2 {:.4f} " \
               "Validation: {:.4f}. R2 {:.4f} " \
               "Loss: {:.4f}"
@@ -53,10 +64,18 @@ def train(model, train_loader, val_loader, args, device="cpu"):
                          val_metrics['mse'], val_metrics['r2'],
                          total_loss))
 
-        log = "DE_Train: {:.4f}, R2 {:.4f} " \
-              "DE_Validation: {:.4f}. R2 {:.4f} "
-        print(log.format(train_metrics['mse_de'], train_metrics['r2_de'],
-                         val_metrics['mse_de'], val_metrics['r2_de']))
+        # Print epoch performance for DE genes
+        if gene_idx is None:
+            log = "DE_Train: {:.4f}, R2 {:.4f} " \
+                  "DE_Validation: {:.4f}. R2 {:.4f} "
+            print(log.format(train_metrics['mse_de'], train_metrics['r2_de'],
+                             val_metrics['mse_de'], val_metrics['r2_de']))
+
+        # Select best model
+        if val_metrics['mse'] < min_val:
+            min_val = val_metrics['mse']
+            best_model = deepcopy(model)
+
     return best_model
 
 
@@ -68,7 +87,7 @@ def r2_loss(output, target):
     return r2
 
 
-def evaluate(loader, model, args, num_de_idx=20):
+def evaluate(loader, model, args, num_de_idx=20, gene_idx=None):
     """
     Run model in inference mode using a given data loader
     """
@@ -91,18 +110,23 @@ def evaluate(loader, model, args, num_de_idx=20):
             p = model(batch)
             t = batch.y
 
+            if gene_idx is not None:
+                p = p[:,gene_idx]
+                t = t[:,gene_idx]
+
             pred.extend(p)
             truth.extend(t)
 
             # Differentially expressed genes
-            for itr, de_idx in enumerate(batch.de_idx):
-                if de_idx is not None:
-                    pred_de.append(p[itr, de_idx])
-                    truth_de.append(t[itr, de_idx])
+            if gene_idx is None:
+                for itr, de_idx in enumerate(batch.de_idx):
+                    if de_idx is not None:
+                        pred_de.append(p[itr, de_idx])
+                        truth_de.append(t[itr, de_idx])
 
-                else:
-                    pred_de.append([torch.zeros(num_de_idx).to(args['device'])])
-                    truth_de.append([torch.zeros(num_de_idx).to(args['device'])])
+                    else:
+                        pred_de.append([torch.zeros(num_de_idx).to(args['device'])])
+                        truth_de.append([torch.zeros(num_de_idx).to(args['device'])])
 
     # all genes
     results['pert_cat'] = np.array(pert_cat)
@@ -112,15 +136,19 @@ def evaluate(loader, model, args, num_de_idx=20):
     results['pred']= pred.detach().cpu().numpy()
     results['truth']= truth.detach().cpu().numpy()
 
-    pred_de = torch.stack(pred_de)
-    truth_de = torch.stack(truth_de)
-    results['pred_de']= pred_de.detach().cpu().numpy()
-    results['truth_de']= truth_de.detach().cpu().numpy()
+    if gene_idx is None:
+        pred_de = torch.stack(pred_de)
+        truth_de = torch.stack(truth_de)
+        results['pred_de']= pred_de.detach().cpu().numpy()
+        results['truth_de']= truth_de.detach().cpu().numpy()
+    else:
+        results['pred_de'] = pred_de
+        results['truth_de'] = truth_de
 
     return results
 
 
-def compute_metrics(results):
+def compute_metrics(results, gene_idx=None):
     """
     Given results from a model run and the ground truth, compute metrics
 
@@ -136,14 +164,19 @@ def compute_metrics(results):
 
         metrics_pert[pert] = {}
         p_idx = np.where(results['pert_cat'] == pert)[0]
-        metrics['r2'].append(r2_score(results['pred'][p_idx].mean(0),
+        if gene_idx is None:
+            metrics['r2'].append(r2_score(results['pred'][p_idx].mean(0),
+                                          results['truth'][p_idx].mean(0)))
+            metrics['mse'].append(mse(results['pred'][p_idx].mean(0),
                                       results['truth'][p_idx].mean(0)))
-        metrics['mse'].append(mse(results['pred'][p_idx].mean(0),
-                                  results['truth'][p_idx].mean(0)))
+        else:
+            metrics['r2'].append(0)
+            metrics['mse'].append((results['pred'][p_idx].mean(0) -
+                                   results['truth'][p_idx].mean(0))**2)
         metrics_pert[pert]['r2'] = metrics['r2'][-1]
         metrics_pert[pert]['mse'] = metrics['mse'][-1]
 
-        if pert != 'ctrl':
+        if pert != 'ctrl' and gene_idx is None:
             metrics['r2_de'].append(r2_score(results['pred_de'][p_idx].mean(0),
                                            results['truth_de'][p_idx].mean(0)))
             metrics['mse_de'].append(mse(results['pred_de'][p_idx].mean(0),
@@ -183,8 +216,9 @@ def trainer(args):
     l_model = linear_model(args)
     pertdl = PertDataloader(adata, l_model.G, l_model.read_weights, args)
 
-    # TODO this should be computed
-    num_node_features = 1
+    # Compute number of features for each node
+    item = [item for item in pertdl.loaders['train_loader']][0]
+    num_node_features = item.x.shape[1]
 
     # Train a model
     all_test_pert_res = []
@@ -194,19 +228,27 @@ def trainer(args):
 
         # Define model
         if args['GNN_node_specific']:
-            model = GNN_node_specific(num_node_features, gene_list,
-                                      args['node_hidden_size'],
-                                      args['node_embed_size'],
-                                      args['ae_num_layers'],
-                                      args['ae_hidden_size'],
-                                      GNN=args['GNN'],
-                                      device=args['device'],
-                                      encode=args['encode']).to(args["device"])
+            best_models = {}
+            for idx, _ in enumerate(gene_list):
+                model = simple_GNN(num_node_features, args['num_genes'],
+                               args['node_hidden_size'],
+                               args['node_embed_size'],
+                               args['edge_weights'],
+                               args['loss_type'])
+
+                best_models[idx] = train(model, pertdl.loaders['train_loader'],
+                                   pertdl.loaders['val_loader'],
+                                   args, device=args["device"], gene_idx=idx)
+
         elif args['GNN_simple']:
             model = simple_GNN(num_node_features, args['num_genes'],
-                               args['node_embed_size'], args['loss_type'])
+                               args['node_hidden_size'],
+                               args['node_embed_size'],
+                               args['edge_weights'],
+                               args['loss_type'])
 
             ## TODO Note: setting intialization manually here
+            """
             state_dict = model.state_dict()
             state_dict['conv1.lin_l.weight'] = \
                 torch.Tensor([1]).to(args['device']).unsqueeze(0)
@@ -216,6 +258,21 @@ def trainer(args):
                 torch.Tensor([1]).to(args['device']).unsqueeze(0)
 
             model.load_state_dict(state_dict)
+            """
+
+            best_model = train(model, pertdl.loaders['train_loader'],
+                               pertdl.loaders['val_loader'],
+                               args, device=args["device"])
+
+        elif args['GAT_simple']:
+            model = simple_GAT(num_node_features, args['num_genes'],
+                               args['node_hidden_size'],
+                               args['node_embed_size'],
+                               args['loss_type'])
+
+            best_model = train(model, pertdl.loaders['train_loader'],
+                               pertdl.loaders['val_loader'],
+                               args, device=args["device"])
 
         else:
             model = GNN_AE(num_node_features, args['num_genes'],
@@ -224,9 +281,9 @@ def trainer(args):
                        args['ae_hidden_size'], GNN=args['GNN'],
                        encode=args['encode']).to(args["device"])
 
-        best_model = train(model, pertdl.loaders['train_loader'],
-                           pertdl.loaders['val_loader'],
-                           args, device=args["device"])
+            best_model = train(model, pertdl.loaders['train_loader'],
+                               pertdl.loaders['val_loader'],
+                               args, device=args["device"])
 
         test_res = evaluate(pertdl.loaders['ood_loader'], best_model, args)
         test_metrics, test_pert_res = compute_metrics(test_res)
@@ -275,13 +332,12 @@ def parse_arguments():
                     '/learnt_weights/Norman2019_ctrl_only_learntweights.csv')
 
     # training arguments
-    parser.add_argument('--device', type=str, default='cuda:4')
-    parser.add_argument('--max_epochs', type=int, default=20)
+    parser.add_argument('--device', type=str, default='cuda:2')
+    parser.add_argument('--max_epochs', type=int, default=10)
     parser.add_argument('--max_minutes', type=int, default=50)
     parser.add_argument('--patience', type=int, default=20)
-    parser.add_argument('--checkpoint_freq', type=int, default=20)
-    parser.add_argument('--lr', type=float, default=5e-4)
-    parser.add_argument('--node_hidden_size', type=int, default=1)
+    parser.add_argument('--lr', type=float, default=5e-3)
+    parser.add_argument('--node_hidden_size', type=int, default=2)
     parser.add_argument('--node_embed_size', type=int, default=1)
     parser.add_argument('--ae_hidden_size', type=int, default=512)
     parser.add_argument('--gnn_num_layers', type=int, default=4)
@@ -291,12 +347,16 @@ def parse_arguments():
     parser.add_argument('--pert_loss_wt', type=int, default=1)
     parser.add_argument('--GNN', type=str, default='GraphConv')
     parser.add_argument('--encode', type=bool, default=False)
-    parser.add_argument('--GNN_node_specific', type=bool, default=False)
-    parser.add_argument('--GNN_simple', type=bool, default=True)
+    parser.add_argument('--GNN_node_specific', type=bool, default=True)
+    parser.add_argument('--GNN_simple', type=bool, default=False)
+    parser.add_argument('--GAT_simple', type=bool, default=False)
     parser.add_argument('--diff_loss', type=bool, default=False)
-    parser.add_argument('--edge_filter', type=bool, default=True)
-    parser.add_argument('--data_suffix', type=str, default='_nopert_feats')
-    parser.add_argument('--pert_feats', type=bool, default=False)
+    parser.add_argument('--edge_filter', type=bool, default=False)
+    parser.add_argument('--edge_weights', type=bool, default=False)
+    parser.add_argument('--zero_target_node', type=bool, default=True)
+    parser.add_argument('--data_suffix', type=str, default='_pert_delta')
+    parser.add_argument('--pert_feats', type=bool, default=True)
+    parser.add_argument('--pert_delta', type=bool, default=False)
     parser.add_argument('--loss_type', type=str, default='micro')
 
     return dict(vars(parser.parse_args()))

@@ -108,11 +108,25 @@ class PertDataloader():
                     pert_feats[int(np.abs(p))] = np.sign(p)
             pert_feats = np.expand_dims(pert_feats, 0)
             feature_mat = torch.Tensor(np.concatenate([X, pert_feats])).T
+
         else:
+            # If perturbations will NOT be represented as node features
             if pert_idx is not None:
                 for p in pert_idx:
                     X[0][int(p)] += 1.0
             feature_mat = torch.Tensor(X).T
+
+        if pert_idx is not None:
+            # ONLY for perturbed cells
+            if self.args['pert_delta']:
+                # If making predictions on delta instead of absolute value
+                temp = torch.zeros(feature_mat.shape)
+                for p in pert_idx:
+                    p_ = int(np.abs(p))
+                    temp[p_, 0] = y[0, p_] - feature_mat[p_, 0]
+                y = torch.Tensor(y.T) - feature_mat
+                y = y.T
+                feature_mat = temp
 
         # Set up edges
         if self.args['edge_filter']:
