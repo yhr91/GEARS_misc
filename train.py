@@ -14,6 +14,13 @@ import sys
 sys.path.append('/dfs/user/yhr/cell_reprogram/model/')
 
 
+def zero_params(model):
+    state_dict = model.state_dict()
+    for k in state_dict.keys():
+        state_dict[k] = torch.zeros(state_dict[k].shape)
+    model.load_state_dict(state_dict)
+
+
 def train(model, train_loader, val_loader, args, device="cpu", gene_idx=None):
     optimizer = optim.Adam(model.parameters(), lr=args['lr'], weight_decay=5e-4)
     best_model = None
@@ -23,6 +30,14 @@ def train(model, train_loader, val_loader, args, device="cpu", gene_idx=None):
         total_loss = 0
         model.train()
         num_graphs = 0
+
+        # Check if gene is always zero
+        if gene_idx is not None:
+            gene_vals = [np.mean((t.y[:,gene_idx]!=0).numpy())
+                         for t in train_loader]
+            if np.mean(gene_vals) <= 0.01:
+                return zero_params(model)
+
         for batch in train_loader:
 
             # Make correction to feature set
@@ -228,6 +243,7 @@ def trainer(args):
         if args['GNN_node_specific']:
             best_models = {}
             for idx, _ in enumerate(gene_list):
+                print('Gene ' + str(idx))
                 model = simple_GNN(num_node_features, args['num_genes'],
                                args['node_hidden_size'],
                                args['node_embed_size'],
@@ -280,11 +296,23 @@ def trainer(args):
             test_metrics, test_pert_res = compute_metrics(test_res)
 
         else:
-            test_res = []
+            test_res = {}
+            test_res['pred'] = []
+            test_res['pred_de'] = []
             for idx, _ in enumerate(gene_list):
-                test_res.append(evaluate(pertdl.loaders['ood_loader'],
-                                    best_models[idx], args, gene_idx=idx))
-                test_metrics, test_pert_res = compute_metrics(test_res)
+                test_res_gene = evaluate(pertdl.loaders['ood_loader'],
+                                    best_models[idx], args, gene_idx=idx)
+                test_res['pred'].append(test_res_gene['pred'])
+                test_res['pred_de'].append(test_res_gene['pred_de'])
+            test_res['pred'] = np.vstack(test_res['pred']).T
+            test_res['pred_de'] = np.vstack(test_res['pred_de']).T
+            test_res['truth'] = test_res_gene['truth']
+            test_res['truth_de'] = test_res_gene['truth_de']
+            test_res['pert_cat'] = test_res_gene['pert_cat']
+            test_metrics, test_pert_res = compute_metrics(test_res, gene_idx=-1)
+
+            # For saving
+            best_model = best_models
 
         all_test_pert_res.append(test_pert_res)
 
@@ -298,8 +326,8 @@ def trainer(args):
     np.save('./saved_args/' + args['modelname'] + '_'+ args['exp_name'], args)
     torch.save(best_model, './saved_models/full_model_'+args['modelname']+
                '_'+ args['exp_name'])
-    torch.save(best_model.state_dict(), './saved_models/'+args['modelname']+
-               '_'+ args['exp_name'])
+    #torch.save(best_model.state_dict(), './saved_models/'+args['modelname']+
+    #           '_'+ args['exp_name'])
 
 
 def parse_arguments():
@@ -332,7 +360,7 @@ def parse_arguments():
 
     # training arguments
     parser.add_argument('--device', type=str, default='cuda:2')
-    parser.add_argument('--max_epochs', type=int, default=5)
+    parser.add_argument('--max_epochs', type=int, default=4)
     parser.add_argument('--max_minutes', type=int, default=50)
     parser.add_argument('--patience', type=int, default=20)
     parser.add_argument('--lr', type=float, default=5e-3)
@@ -341,8 +369,8 @@ def parse_arguments():
     parser.add_argument('--ae_hidden_size', type=int, default=512)
     parser.add_argument('--gnn_num_layers', type=int, default=4)
     parser.add_argument('--ae_num_layers', type=int, default=4)
-    parser.add_argument('--exp_name', type=str, default='test2')
-    parser.add_argument('--num_itr', type=int, default=3)
+    parser.add_argument('--exp_name', type=str, default='nodespecific')
+    parser.add_argument('--num_itr', type=int, default=1)
     parser.add_argument('--pert_loss_wt', type=int, default=1)
     parser.add_argument('--GNN', type=str, default='GraphConv')
     parser.add_argument('--encode', type=bool, default=False)
