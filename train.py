@@ -187,8 +187,6 @@ def compute_metrics(results, gene_idx=None):
             metrics_pert[pert]['r2_de'] = 0
             metrics_pert[pert]['mse_de'] = 0
 
-
-
     metrics['mse'] = np.mean(metrics['mse'])
     metrics['r2'] = np.mean(metrics['r2'])
     metrics['mse_de'] = np.mean(metrics['mse_de'])
@@ -260,19 +258,11 @@ def trainer(args):
             model.load_state_dict(state_dict)
             """
 
-            best_model = train(model, pertdl.loaders['train_loader'],
-                               pertdl.loaders['val_loader'],
-                               args, device=args["device"])
-
         elif args['GAT_simple']:
             model = simple_GAT(num_node_features, args['num_genes'],
                                args['node_hidden_size'],
                                args['node_embed_size'],
                                args['loss_type'])
-
-            best_model = train(model, pertdl.loaders['train_loader'],
-                               pertdl.loaders['val_loader'],
-                               args, device=args["device"])
 
         else:
             model = GNN_AE(num_node_features, args['num_genes'],
@@ -281,12 +271,21 @@ def trainer(args):
                        args['ae_hidden_size'], GNN=args['GNN'],
                        encode=args['encode']).to(args["device"])
 
+        if not args['GNN_node_specific']:
             best_model = train(model, pertdl.loaders['train_loader'],
                                pertdl.loaders['val_loader'],
                                args, device=args["device"])
 
-        test_res = evaluate(pertdl.loaders['ood_loader'], best_model, args)
-        test_metrics, test_pert_res = compute_metrics(test_res)
+            test_res = evaluate(pertdl.loaders['ood_loader'], best_model, args)
+            test_metrics, test_pert_res = compute_metrics(test_res)
+
+        else:
+            test_res = []
+            for idx, _ in enumerate(gene_list):
+                test_res.append(evaluate(pertdl.loaders['ood_loader'],
+                                    best_models[idx], args, gene_idx=idx))
+                test_metrics, test_pert_res = compute_metrics(test_res)
+
         all_test_pert_res.append(test_pert_res)
 
         log = "Final best performing model" + str(itr) +\
@@ -333,7 +332,7 @@ def parse_arguments():
 
     # training arguments
     parser.add_argument('--device', type=str, default='cuda:2')
-    parser.add_argument('--max_epochs', type=int, default=10)
+    parser.add_argument('--max_epochs', type=int, default=5)
     parser.add_argument('--max_minutes', type=int, default=50)
     parser.add_argument('--patience', type=int, default=20)
     parser.add_argument('--lr', type=float, default=5e-3)
