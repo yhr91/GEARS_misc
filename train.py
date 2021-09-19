@@ -15,28 +15,48 @@ sys.path.append('/dfs/user/yhr/cell_reprogram/model/')
 
 
 def zero_params(model):
+    """
+    Zeros out all parameters of the model
+    Return: None
+    """
     state_dict = model.state_dict()
     for k in state_dict.keys():
         state_dict[k] = torch.zeros(state_dict[k].shape)
     model.load_state_dict(state_dict)
 
 
+def check_node_predictable(loader, gene_idx):
+    """
+    Checks if node is predictable
+    """
+    gene_vals = []
+    for it, t in enumerate(loader):
+        # Check if no incoming edges to target gene
+        if it == 0:
+            if len(np.where(t.edge_index[1] == gene_idx)[0]) == 0:
+                return False
+        gene_vals.append(np.mean((t.y[:, gene_idx] != 0).numpy()))
+
+    # Check if target gene is always zero
+    if np.mean(gene_vals) <= 0.01:
+        return False
+    return True
+
+
 def train(model, train_loader, val_loader, args, device="cpu", gene_idx=None):
     optimizer = optim.Adam(model.parameters(), lr=args['lr'], weight_decay=5e-4)
-    best_model = None
     min_val = np.inf
+
+    # Don't waste time training unpredictable target node
+    if gene_idx is not None:
+        if not check_node_predictable(train_loader, gene_idx):
+            zero_params(model)
+            return model
 
     for epoch in range(args["max_epochs"]):
         total_loss = 0
         model.train()
         num_graphs = 0
-
-        # Check if gene is always zero
-        if gene_idx is not None:
-            gene_vals = [np.mean((t.y[:,gene_idx]!=0).numpy())
-                         for t in train_loader]
-            if np.mean(gene_vals) <= 0.01:
-                return zero_params(model)
 
         for batch in train_loader:
 
@@ -117,6 +137,7 @@ def evaluate(loader, model, args, num_de_idx=20, gene_idx=None):
 
     for batch in loader:
         batch.to(args['device'])
+        model.to(args['device'])
         results = {}
         pert_cat.extend(batch.pert)
 
@@ -242,7 +263,10 @@ def trainer(args):
         # Define model
         if args['GNN_node_specific']:
             best_models = {}
-            for idx, _ in enumerate(gene_list):
+            start, stop = args['train_genes'].split(',')
+            start = int(start)
+            stop = int(stop)
+            for idx in range(start,stop):
                 print('Gene ' + str(idx))
                 model = simple_GNN(num_node_features, args['num_genes'],
                                args['node_hidden_size'],
@@ -299,7 +323,7 @@ def trainer(args):
             test_res = {}
             test_res['pred'] = []
             test_res['pred_de'] = []
-            for idx, _ in enumerate(gene_list):
+            for idx in range(start, stop):
                 test_res_gene = evaluate(pertdl.loaders['ood_loader'],
                                     best_models[idx], args, gene_idx=idx)
                 test_res['pred'].append(test_res_gene['pred'])
@@ -321,11 +345,18 @@ def trainer(args):
         print(log.format(test_metrics['mse_de'], test_metrics['r2_de']))
 
     # Save model outputs and best model
-    np.save('./saved_metrics/'+args['modelname'] + '_'+ args['exp_name'],
+    np.save('./saved_metrics/'+args['modelname']
+            + '_'+ args['exp_name']
+            + args['train_genes'],
             all_test_pert_res)
-    np.save('./saved_args/' + args['modelname'] + '_'+ args['exp_name'], args)
-    torch.save(best_model, './saved_models/full_model_'+args['modelname']+
-               '_'+ args['exp_name'])
+    np.save('./saved_args/'
+            + args['modelname']
+            + '_'+ args['exp_name']
+            + args['train_genes'], args)
+    torch.save(best_model, './saved_models/full_model_'
+               +args['modelname']
+               +'_'+ args['exp_name']
+               + args['train_genes'])
     #torch.save(best_model.state_dict(), './saved_models/'+args['modelname']+
     #           '_'+ args['exp_name'])
 
@@ -359,31 +390,36 @@ def parse_arguments():
                     '/learnt_weights/Norman2019_ctrl_only_learntweights.csv')
 
     # training arguments
-    parser.add_argument('--device', type=str, default='cuda:2')
-    parser.add_argument('--max_epochs', type=int, default=4)
+    parser.add_argument('--device', type=str, default='cuda:0')
+    parser.add_argument('--max_epochs', type=int, default=5)
     parser.add_argument('--max_minutes', type=int, default=50)
     parser.add_argument('--patience', type=int, default=20)
-    parser.add_argument('--lr', type=float, default=5e-3)
+    parser.add_argument('--lr', type=float, default=5e-2)
     parser.add_argument('--node_hidden_size', type=int, default=2)
     parser.add_argument('--node_embed_size', type=int, default=1)
     parser.add_argument('--ae_hidden_size', type=int, default=512)
     parser.add_argument('--gnn_num_layers', type=int, default=4)
     parser.add_argument('--ae_num_layers', type=int, default=4)
-    parser.add_argument('--exp_name', type=str, default='nodespecific')
+    parser.add_argument('--exp_name', type=str,
+                        default='nodespecific_GAT_relu_2lay')
     parser.add_argument('--num_itr', type=int, default=1)
     parser.add_argument('--pert_loss_wt', type=int, default=1)
-    parser.add_argument('--GNN', type=str, default='GraphConv')
     parser.add_argument('--encode', type=bool, default=False)
+
     parser.add_argument('--GNN_node_specific', type=bool, default=True)
+    parser.add_argument('--train_genes', type=str, default='0,10')
     parser.add_argument('--GNN_simple', type=bool, default=False)
     parser.add_argument('--GAT_simple', type=bool, default=False)
+    parser.add_argument('--GNN', type=str, default='GraphConv')
+
     parser.add_argument('--diff_loss', type=bool, default=False)
     parser.add_argument('--edge_filter', type=bool, default=False)
     parser.add_argument('--edge_weights', type=bool, default=False)
     parser.add_argument('--zero_target_node', type=bool, default=True)
+    parser.add_argument('--pert_feats', type=bool, default=False)
+    parser.add_argument('--pert_delta', type=bool, default=True)
+
     parser.add_argument('--data_suffix', type=str, default='_pert_delta')
-    parser.add_argument('--pert_feats', type=bool, default=True)
-    parser.add_argument('--pert_delta', type=bool, default=False)
     parser.add_argument('--loss_type', type=str, default='micro')
 
     return dict(vars(parser.parse_args()))

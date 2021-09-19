@@ -310,10 +310,11 @@ class simple_GNN(torch.nn.Module):
         else:
             edge_weight = None
 
-        x = self.conv1(x, edge_index=edge_index, edge_weight=edge_weight)
-        #x = x.relu()
-        #x = self.conv2(x, edge_index=edge_index, edge_weight=edge_weight)
-        #x = x.relu()
+        x = self.conv1(x, edge_index=edge_index)
+        #x = self.conv1(x, edge_index=edge_index, edge_weight=edge_weight)
+        x = x.relu()
+        x = self.conv2(x, edge_index=edge_index)
+        x = x.relu()
         out = self.lin(x)
 
         out = torch.split(torch.flatten(out), self.num_genes *
@@ -364,7 +365,7 @@ class simple_GAT(torch.nn.Module):
 
         # 1. Obtain node embeddings
         x = self.conv1(x, edge_index=edge_index)
-        #x = x.relu()
+        x = x.relu()
         #x = self.conv2(x, edge_index=edge_index)
         #x = x.relu()
         out = self.lin(x)
