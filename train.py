@@ -4,7 +4,7 @@ import scanpy as sc
 import numpy as np
 
 import argparse
-from model import GNN_AE, linear_model, simple_GNN, simple_GAT
+from model import GNN_AE, linear_model, simple_GNN, simple_GNN_AE
 from data import PertDataloader
 from sklearn.metrics import r2_score
 from sklearn.metrics import mean_squared_error as mse
@@ -74,7 +74,8 @@ def train(model, train_loader, val_loader, args, device="cpu", gene_idx=None):
 
             # Direct gradients through only specific gene
             if gene_idx is not None:
-                pred = pred[:,gene_idx]
+                if not args['single_out']:
+                    pred = pred[:,gene_idx]
                 y = y[:,gene_idx]
 
             # Compute loss
@@ -114,14 +115,6 @@ def train(model, train_loader, val_loader, args, device="cpu", gene_idx=None):
     return best_model
 
 
-def r2_loss(output, target):
-    target_mean = torch.mean(target)
-    ss_tot = torch.sum((target - target_mean) ** 2)
-    ss_res = torch.sum((target - output) ** 2)
-    r2 = 1 - ss_res / ss_tot
-    return r2
-
-
 def evaluate(loader, model, args, num_de_idx=20, gene_idx=None):
     """
     Run model in inference mode using a given data loader
@@ -147,7 +140,8 @@ def evaluate(loader, model, args, num_de_idx=20, gene_idx=None):
             t = batch.y
 
             if gene_idx is not None:
-                p = p[:,gene_idx]
+                if not args['single_out']:
+                    p = p[:,gene_idx]
                 t = t[:,gene_idx]
 
             pred.extend(p)
@@ -268,7 +262,16 @@ def trainer(args):
             stop = int(stop)
             for idx in range(start,stop):
                 print('Gene ' + str(idx))
-                model = simple_GNN(num_node_features, args['num_genes'],
+                if args['AE']:
+                    model = simple_GNN_AE(num_node_features, args['num_genes'],
+                                   args['node_hidden_size'],
+                                   args['node_embed_size'],
+                                   args['edge_weights'],
+                                   args['ae_num_layers'],
+                                   args['ae_hidden_size'],
+                                   args['loss_type'])
+                else:
+                    model = simple_GNN(num_node_features, args['num_genes'],
                                args['node_hidden_size'],
                                args['node_embed_size'],
                                args['edge_weights'],
@@ -285,31 +288,14 @@ def trainer(args):
                                args['edge_weights'],
                                args['loss_type'])
 
-            ## TODO Note: setting intialization manually here
-            """
-            state_dict = model.state_dict()
-            state_dict['conv1.lin_l.weight'] = \
-                torch.Tensor([1]).to(args['device']).unsqueeze(0)
-            state_dict['conv1.lin_l.bias'] = \
-                torch.Tensor([0]).to(args['device'])
-            state_dict['conv1.lin_r.weight'] = \
-                torch.Tensor([1]).to(args['device']).unsqueeze(0)
-
-            model.load_state_dict(state_dict)
-            """
-
-        elif args['GAT_simple']:
-            model = simple_GAT(num_node_features, args['num_genes'],
+        elif args['GNN_AE']:
+            model = simple_GNN_AE(num_node_features, args['num_genes'],
                                args['node_hidden_size'],
                                args['node_embed_size'],
+                               args['edge_weights'],
+                               args['ae_num_layers'],
+                               args['ae_hidden_size'],
                                args['loss_type'])
-
-        else:
-            model = GNN_AE(num_node_features, args['num_genes'],
-                       args['gnn_num_layers'], args['node_hidden_size'],
-                       args['node_embed_size'], args['ae_num_layers'],
-                       args['ae_hidden_size'], GNN=args['GNN'],
-                       encode=args['encode']).to(args["device"])
 
         if not args['GNN_node_specific']:
             best_model = train(model, pertdl.loaders['train_loader'],
@@ -320,6 +306,7 @@ def trainer(args):
             test_metrics, test_pert_res = compute_metrics(test_res)
 
         else:
+            # Node specific model needs special testing
             test_res = {}
             test_res['pred'] = []
             test_res['pred_de'] = []
@@ -339,7 +326,6 @@ def trainer(args):
             best_model = best_models
 
         all_test_pert_res.append(test_pert_res)
-
         log = "Final best performing model" + str(itr) +\
               ": Test_DE: {:.4f}, R2 {:.4f} "
         print(log.format(test_metrics['mse_de'], test_metrics['r2_de']))
@@ -357,8 +343,6 @@ def trainer(args):
                +args['modelname']
                +'_'+ args['exp_name']
                + args['train_genes'])
-    #torch.save(best_model.state_dict(), './saved_models/'+args['modelname']+
-    #           '_'+ args['exp_name'])
 
 
 def parse_arguments():
@@ -372,11 +356,9 @@ def parse_arguments():
                         default='./datasets/Norman2019_prep_new_TFcombosin5k_nocombo_somesingle_worstde_numsamples_1_new_method.h5ad')
     parser.add_argument('--perturbation_key', type=str, default="condition")
     parser.add_argument('--species', type=str, default="human")
-    parser.add_argument('--cell_type_key', type=str, default="cell_type")
     parser.add_argument('--split_key', type=str, default="split_yhr_TFcombos")
     parser.add_argument('--loss_ae', type=str, default='gauss')
     parser.add_argument('--batch_size', type=int, default=100)
-    parser.add_argument('--decoder_activation', type=str, default='linear')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--binary_pert', type=bool, default=True)
     parser.add_argument('--edge_attr', type=bool, default=True)
@@ -390,32 +372,32 @@ def parse_arguments():
                     '/learnt_weights/Norman2019_ctrl_only_learntweights.csv')
 
     # training arguments
-    parser.add_argument('--device', type=str, default='cuda:0')
-    parser.add_argument('--max_epochs', type=int, default=5)
-    parser.add_argument('--max_minutes', type=int, default=50)
+    parser.add_argument('--device', type=str, default='cuda:9')
+    parser.add_argument('--max_epochs', type=int, default=7)
     parser.add_argument('--patience', type=int, default=20)
-    parser.add_argument('--lr', type=float, default=5e-2)
+    parser.add_argument('--lr', type=float, default=5e-3)
     parser.add_argument('--node_hidden_size', type=int, default=2)
     parser.add_argument('--node_embed_size', type=int, default=1)
     parser.add_argument('--ae_hidden_size', type=int, default=512)
-    parser.add_argument('--gnn_num_layers', type=int, default=4)
-    parser.add_argument('--ae_num_layers', type=int, default=4)
+    parser.add_argument('--gnn_num_layers', type=int, default=2)
+    parser.add_argument('--ae_num_layers', type=int, default=2)
     parser.add_argument('--exp_name', type=str,
-                        default='nodespecific_GAT_relu_2lay')
+                        default='nodespecific_GAT_2_1_AE')
     parser.add_argument('--num_itr', type=int, default=1)
     parser.add_argument('--pert_loss_wt', type=int, default=1)
     parser.add_argument('--encode', type=bool, default=False)
 
     parser.add_argument('--GNN_node_specific', type=bool, default=True)
-    parser.add_argument('--train_genes', type=str, default='0,10')
+    parser.add_argument('--AE', type=bool, default=True)
+    parser.add_argument('--train_genes', type=str, default='0,5')
     parser.add_argument('--GNN_simple', type=bool, default=False)
-    parser.add_argument('--GAT_simple', type=bool, default=False)
     parser.add_argument('--GNN', type=str, default='GraphConv')
 
     parser.add_argument('--diff_loss', type=bool, default=False)
     parser.add_argument('--edge_filter', type=bool, default=False)
     parser.add_argument('--edge_weights', type=bool, default=False)
     parser.add_argument('--zero_target_node', type=bool, default=True)
+    parser.add_argument('--single_out', type=bool, default=True)
     parser.add_argument('--pert_feats', type=bool, default=False)
     parser.add_argument('--pert_delta', type=bool, default=True)
 

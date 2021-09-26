@@ -22,7 +22,6 @@ def weighted_mse_loss(input, target, weight):
     return torch.mean(weight * sample_mean)
 
 
-# Create adjacency matrix for computation
 class linear_model():
     def __init__(self, args):
         self.TFs = get_TFs(args['species'])
@@ -281,7 +280,7 @@ class GNN_AE(torch.nn.Module):
 
 class simple_GNN(torch.nn.Module):
     """
-    GNN for debugging
+    shallow GNN architecture
     """
 
     def __init__(self, num_feats, num_genes, hidden_size, node_embed_size,
@@ -290,8 +289,8 @@ class simple_GNN(torch.nn.Module):
 
         self.num_genes = num_genes
         self.node_embed_size = node_embed_size
-        self.conv1 = GCNConv(num_feats, hidden_size)
-        self.conv2 = GCNConv(hidden_size, hidden_size)
+        self.conv1 = GATConv(num_feats, hidden_size)
+        self.conv2 = GATConv(hidden_size, hidden_size)
         self.lin = Linear(hidden_size, node_embed_size)
         self.loss_type = loss_type
 
@@ -343,14 +342,15 @@ class simple_GNN(torch.nn.Module):
             return loss
 
 
-class simple_GAT(torch.nn.Module):
+class simple_GNN_AE(torch.nn.Module):
     """
-    GAT
+    shallow GNN + AE
     """
 
     def __init__(self, num_feats, num_genes, hidden_size, node_embed_size,
+                 incl_edge_weight, ae_num_layers, ae_hidden_size,
                  loss_type='micro'):
-        super(simple_GAT, self).__init__()
+        super(simple_GNN_AE, self).__init__()
 
         self.num_genes = num_genes
         self.node_embed_size = node_embed_size
@@ -359,20 +359,43 @@ class simple_GAT(torch.nn.Module):
         self.lin = Linear(hidden_size, node_embed_size)
         self.loss_type = loss_type
 
+        if incl_edge_weight:
+            self.incl_edge_weight = True
+        else:
+            self.incl_edge_weight = False
+
+        ae_input_size = node_embed_size * num_genes
+        self.encoder = MLP(
+            [ae_input_size] + [ae_hidden_size] * ae_num_layers + [
+                ae_hidden_size])
+        self.decoder = MLP(
+            [ae_hidden_size] + [ae_hidden_size] * ae_num_layers + [1],
+            last_layer_act='linear')
+
     def forward(self, data):
         x, edge_index, edge_attr, batch = data.x, data.edge_index, \
                                           data.edge_attr, data.batch
 
         # 1. Obtain node embeddings
+        if self.incl_edge_weight:
+            edge_weight = edge_attr
+        else:
+            edge_weight = None
+
         x = self.conv1(x, edge_index=edge_index)
+        #x = self.conv1(x, edge_index=edge_index, edge_weight=edge_weight)
         x = x.relu()
-        #x = self.conv2(x, edge_index=edge_index)
-        #x = x.relu()
+        x = self.conv2(x, edge_index=edge_index)
+        x = x.relu()
         out = self.lin(x)
 
         out = torch.split(torch.flatten(out), self.num_genes *
                           self.node_embed_size)
-        return torch.stack(out)
+        out = torch.stack(out)
+        encoded = self.encoder(out)
+        decoded = self.decoder(encoded)
+
+        return decoded.squeeze()
 
     def loss(self, pred, y, perts, weight=1):
 
