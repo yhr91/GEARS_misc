@@ -23,24 +23,24 @@ def weighted_mse_loss(input, target, weight):
 
 
 class linear_model():
-    def __init__(self, args):
-        self.TFs = get_TFs(args['species'])
+    def __init__(self, species, regulon_name, gene_list, adjacency):
+        self.TFs = get_TFs(species)
 
         # Set up graph structure
-        G_df = get_graph(name=args['regulon_name'],
+        G_df = get_graph(name=regulon_name,
                          TF_only=False)
         print('Edges: ' + str(len(G_df)))
         self.G = nx.from_pandas_edgelist(G_df, source=0,
                                          target=1, create_using=nx.DiGraph())
 
         # Add nodes without edges but with expression to the graph
-        for n in args['gene_list']:
+        for n in gene_list:
             if n not in self.G.nodes():
                 self.G.add_node(n)
 
         # Add edge weights
-        self.read_weights = pd.read_csv(args['adjacency'], index_col=0)
-        self.gene_list = args['gene_list']
+        self.read_weights = pd.read_csv(adjacency, index_col=0)
+        self.gene_list = gene_list
         try:
             self.read_weights = self.read_weights.set_index('TF')
         except:
@@ -416,4 +416,52 @@ class simple_GNN_AE(torch.nn.Module):
             non_ctrl_idx = np.where([('ctrl' != p) for p in perts])[0]
             weights[non_ctrl_idx] = weight
             loss = weighted_mse_loss(pred, y, torch.Tensor(weights).to(pred.device))
+            return loss
+
+
+class simple_AE(torch.nn.Module):
+    """
+    GNN for debugging
+    """
+
+    def __init__(self, num_feats, num_genes, hidden_size, node_embed_size,
+                 ae_num_layers, ae_hidden_size, loss_type='micro'):
+        super(simple_AE, self).__init__()
+
+        self.num_genes = num_genes
+        self.loss_type = loss_type
+        ae_input_size = node_embed_size * num_genes
+        self.encoder = MLP(
+            [ae_input_size] + [ae_hidden_size] * ae_num_layers + [
+                ae_hidden_size])
+        self.decoder = MLP(
+            [ae_hidden_size] + [ae_hidden_size] * ae_num_layers + [num_genes],
+            last_layer_act='linear')
+
+    def forward(self, x):
+        encoded = self.encoder(x)
+        decoded = self.decoder(encoded)
+
+        return decoded
+
+    def loss(self, pred, y, perts, weight=1):
+
+        # Micro average MSE
+        if self.loss_type == 'micro':
+            mse_p = torch.nn.MSELoss()
+            perts = np.array(perts)
+            losses = torch.tensor(0.0, requires_grad=True).to(pred.device)
+            for p in set(perts):
+                pred_p = pred[np.where(perts == p)[0]]
+                y_p = y[np.where(perts == p)[0]]
+                losses += mse_p(pred_p, y_p)
+            return losses / (len(set(perts)))
+
+        else:
+            # Weigh the loss for perturbations
+            weights = np.ones(len(pred))
+            non_ctrl_idx = np.where([('ctrl' != p) for p in perts])[0]
+            weights[non_ctrl_idx] = weight
+            loss = weighted_mse_loss(pred, y,
+                                     torch.Tensor(weights).to(pred.device))
             return loss
