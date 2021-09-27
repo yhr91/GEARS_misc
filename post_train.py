@@ -2,6 +2,7 @@ import torch
 import torch.optim as optim
 import scanpy as sc
 import numpy as np
+import glob
 
 import argparse
 from model import linear_model, simple_AE
@@ -22,19 +23,27 @@ def trainer(args):
     adata = sc.read_h5ad(args['fname'])
     gene_list = [f for f in adata.var.gene_symbols.values]
     args['gene_list'] = gene_list
+    args['num_genes'] = len(gene_list)
+    args['modelname'] = args['fname'].split('/')[-1].split('.h5ad')[0] + \
+                        args['data_suffix']
 
     l_model = linear_model(args['species'], args['regulon_name'],
                            args['gene_list'], args['adjacency'])
     pertdl = PertDataloader(adata, l_model.G, l_model.read_weights, args)
 
+    # Compute number of features for each node
+    item = [item for item in pertdl.loaders['train_loader']][0]
+    args['num_node_features'] = item.x.shape[1]
 
     # Create a single dictionary indexed by gene id
     loaded_models = {}
-    for m in args['modelnames']:
+    for m in glob.glob(args['modelnames']):
         loaded_models.update(torch.load(m, map_location=args['device']))
 
-    train_preds = batch_predict(pertdl.loaders['train'], loaded_models)
-    val_preds = batch_predict(pertdl.loaders['val'], loaded_models)
+    train_preds = batch_predict(pertdl.loaders['train_loader'],
+                                loaded_models, args)
+    val_preds = batch_predict(pertdl.loaders['val_loader'],
+                              loaded_models, args)
 
     best_model = train(args, train_preds, val_preds, pertdl.loaders)
 
@@ -66,7 +75,7 @@ def train(args, train_preds, val_preds, loaders):
         total_loss = 0
 
         AE.to(args['device'])
-        for itr, batch in enumerate(loaders['train']):
+        for itr, batch in enumerate(loaders['train_loader']):
             batch.to(args['device'])
             X = train_preds[num_graphs:num_graphs + batch.num_graphs]
             X = X.to(args['device'])
@@ -84,9 +93,9 @@ def train(args, train_preds, val_preds, loaders):
 
         total_loss /= num_graphs
 
-        train_res = evaluate(loaders['train'], AE,
+        train_res = evaluate(loaders['train_loader'], AE,
                              train_preds, args, gene_idx=None)
-        val_res = evaluate(loaders['val'], AE,
+        val_res = evaluate(loaders['val_loader'], AE,
                            val_preds, args, gene_idx=None)
         train_metrics, _ = compute_metrics(train_res, gene_idx=None)
         val_metrics, _ = compute_metrics(val_res, gene_idx=None)
@@ -111,7 +120,7 @@ def parse_arguments():
     # dataset arguments
     parser = argparse.ArgumentParser(description='Post training')
     parser.add_argument('--modelnames', type=str,
-                        default='../saved_models/full_model_Norman2019_*GAT*AE*')
+                    default='./saved_models/full_model_Norman2019_*GAT_relu_2lay*')
     parser.add_argument('--out_name', type=str,
                         default="AE_post_train_GAT_relu_2lay_deep")
 
@@ -166,6 +175,8 @@ def parse_arguments():
 
     parser.add_argument('--data_suffix', type=str, default='_pert_delta')
     parser.add_argument('--loss_type', type=str, default='micro')
+
+    return dict(vars(parser.parse_args()))
 
 if __name__ == "__main__":
     trainer(parse_arguments())
