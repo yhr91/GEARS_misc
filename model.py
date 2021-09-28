@@ -18,11 +18,18 @@ from flow import get_graph, get_expression_data, \
 
 # Helpers
 def weighted_mse_loss(input, target, weight):
+    """
+    Weighted MSE implementation
+    """
     sample_mean = torch.mean((input - target) ** 2, 1)
     return torch.mean(weight * sample_mean)
 
 
 class linear_model():
+    """
+    Linear model object for reading in background network and assigning
+    weights. Only considers directed edges from TFs
+    """
     def __init__(self, species, regulon_name, gene_list, adjacency):
         self.TFs = get_TFs(species)
 
@@ -63,6 +70,7 @@ class linear_model():
 class MLP(torch.nn.Module):
     """
     A multilayer perceptron with ReLU activations and optional BatchNorm.
+    From Lotfollahi et al. 2021
     """
 
     def __init__(self, sizes, batch_norm=True, last_layer_act="linear"):
@@ -98,9 +106,9 @@ class MLP(torch.nn.Module):
 # GNN architecture 1
 class GNN_1(torch.nn.Module):
     """
+    GNN architecture 1
     Creates node level embeddings. All nodes for each graph are concatenated
     at the end of the forward call.
-
     """
 
     def __init__(self, num_feats, num_genes, num_layers, hidden_size,
@@ -143,6 +151,11 @@ class GNN_1(torch.nn.Module):
 
 # GNN architecture 2
 class GNN_2(torch.nn.Module):
+    """
+    GNN architecture 2
+    Creates node level embeddings. All nodes for each graph are concatenated
+    at the end of the forward call.
+    """
     def __init__(self, num_feats, num_genes, hidden_size, embed_size, GNN):
         super(GNN_2, self).__init__()
         torch.manual_seed(12345)
@@ -184,6 +197,7 @@ class GNN_2(torch.nn.Module):
 
 class GNN_node_specific(torch.nn.Module):
     """
+    NOT WORKING CURRENTLY
     TODO very memomry inefficient implementation that doesn't work right now
     Node specific GNN
     (i) [GNN] message passing over gene-gene graph with expression and
@@ -232,6 +246,7 @@ class GNN_AE(torch.nn.Module):
     GNN + AE Model consisting of two steps:
     (i) [GNN] message passing over gene-gene graph with expression and
     perturbations together represented as two dimensional node features
+    Calss GNN architecture GNN_1 or GNN_2
     (ii) [AE] "auto-encoder" to convert concatenated node embeddings to post
     perturbation expression state
     """
@@ -280,7 +295,7 @@ class GNN_AE(torch.nn.Module):
 
 class simple_GNN(torch.nn.Module):
     """
-    shallow GNN architecture
+    shallow GNN architecture with no AE
     """
 
     def __init__(self, num_feats, num_genes, hidden_size, node_embed_size,
@@ -349,7 +364,7 @@ class simple_GNN_AE(torch.nn.Module):
 
     def __init__(self, num_feats, num_genes, hidden_size, node_embed_size,
                  incl_edge_weight, ae_num_layers, ae_hidden_size,
-                 loss_type='micro'):
+                 single_gene_out=False, loss_type='micro'):
         super(simple_GNN_AE, self).__init__()
 
         self.num_genes = num_genes
@@ -358,6 +373,10 @@ class simple_GNN_AE(torch.nn.Module):
         self.conv2 = GATConv(hidden_size, hidden_size)
         self.lin = Linear(hidden_size, node_embed_size)
         self.loss_type = loss_type
+        if single_gene_out==1:
+            ae_output_size = 1
+        else:
+            ae_output_size = num_genes
 
         if incl_edge_weight:
             self.incl_edge_weight = True
@@ -366,11 +385,11 @@ class simple_GNN_AE(torch.nn.Module):
 
         ae_input_size = node_embed_size * num_genes
         self.encoder = MLP(
-            [ae_input_size] + [ae_hidden_size] * ae_num_layers + [
-                ae_hidden_size])
+            [ae_input_size] + [ae_hidden_size] * ae_num_layers +
+            [ae_hidden_size])
         self.decoder = MLP(
-            [ae_hidden_size] + [ae_hidden_size] * ae_num_layers + [1],
-            last_layer_act='linear')
+            [ae_hidden_size] + [ae_hidden_size] * ae_num_layers +
+            [ae_output_size], last_layer_act='linear')
 
     def forward(self, data):
         x, edge_index, edge_attr, batch = data.x, data.edge_index, \
@@ -411,7 +430,7 @@ class simple_GNN_AE(torch.nn.Module):
             return losses/(len(set(perts)))
 
         else:
-            # Weigh the loss for perturbations
+            # Weigh the loss for perturbations (unweighted by default)
             weights = np.ones(len(pred))
             non_ctrl_idx = np.where([('ctrl' != p) for p in perts])[0]
             weights[non_ctrl_idx] = weight
@@ -421,7 +440,7 @@ class simple_GNN_AE(torch.nn.Module):
 
 class simple_AE(torch.nn.Module):
     """
-    GNN for debugging
+    AE for post training
     """
 
     def __init__(self, num_feats, num_genes, hidden_size, node_embed_size,

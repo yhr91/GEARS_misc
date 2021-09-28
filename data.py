@@ -65,6 +65,9 @@ class PertDataloader():
                 'ood_loader': ood_loader}
 
     def create_split_dataloader(self, split='train'):
+        """
+        Creates a dataloader for train, validation or test split
+        """
         split_adata = self.adata[self.adata.obs[self.args['split_key']] == split]
         split_dl = []
         for p in split_adata.obs[self.args['perturbation_key']].unique():
@@ -97,7 +100,7 @@ class PertDataloader():
     def create_cell_graph(self, X, y, de_idx, pert, pert_idx=None):
         """
         Uses the gene expression information for a cell and an underlying
-        graph (e.g coexpression) to create a cell specific graph for control
+        graph (e.g coexpression) to create a graph for each cell
         """
 
         if self.args['pert_feats']:
@@ -172,7 +175,7 @@ class PertDataloader():
     def create_cell_graph_dataset(self, split_adata, pert_category,
                                   num_samples=1):
         """
-        Create a dataset of graphs using AnnData object
+        Combine cell graphs to create a dataset of cell graphs
         """
 
         print(pert_category)
@@ -216,24 +219,12 @@ class PertDataloader():
 
         return cell_graphs
 
-    def get_ood_pert_classes(self, split, single_only=True):
-        # Get names of a subset of out of distribution perturbations
-
-        # Single perts only
-        if single_only:
-            ood_perts = [n for n in list(
-                self.adata[self.adata.obs[split] == 'ood'].obs[
-                    'condition'].unique()) if 'ctrl' in n]
-
-        # All perts
-        else:
-            ood_perts = [n for n in list(
-                self.adata[self.adata.obs[split] == 'ood'].obs[
-                    'condition'].unique())]
-
-        return ood_perts
 
     def get_train_test_split(self):
+        """
+        Get train, validation ('test' following naming convention from
+        Lotfollahi) and test set ('ood') split from input data
+        """
 
         adata = sc.read(self.args['fname'])
         train_adata = adata[adata.obs[self.args['split_key']] == 'train']
