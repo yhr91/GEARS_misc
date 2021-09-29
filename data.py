@@ -7,9 +7,35 @@ import os
 from random import shuffle
 import pandas as pd
 import scanpy as sc
+import networkx as nx
 
 import sys
 sys.path.append('/dfs/user/yhr/cell_reprogram/model/')
+
+
+class Network():
+    """
+    Reads in background network with associated weights
+    """
+    def __init__(self, fname, gene_list):
+        self.edge_list = pd.read_csv(fname)
+        self.gene_list = gene_list
+        self.correct_node_list()
+        self.G = self.create_graph()
+        self.weights = self.edge_list['score'].values
+
+    def create_graph(self):
+        G = nx.from_pandas_edgelist(self.edge_list, source='source',
+                        target='target', edge_attr=['importance'],
+                        create_using=nx.DiGraph())
+        return G
+
+    def correct_node_list(self):
+        gene_list_df = pd.DataFrame(self.gene_list, columns=['gene'])
+        self.edge_list = self.edge_list.merge(gene_list_df, left_on='source',
+                                              right_on='gene', how='inner')
+        self.edge_list = self.edge_list.merge(gene_list_df, left_on='target',
+                                              right_on='gene', how='inner')
 
 
 class PertDataloader():

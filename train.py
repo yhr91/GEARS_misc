@@ -5,7 +5,7 @@ import numpy as np
 
 import argparse
 from model import linear_model, simple_GNN, simple_GNN_AE
-from data import PertDataloader
+from data import PertDataloader, Network
 from copy import deepcopy
 from inference import evaluate, compute_metrics
 
@@ -68,17 +68,16 @@ def train(model, train_loader, val_loader, args, device="cpu", gene_idx=None):
         
         
         # Print epoch performance for DE genes
-        if gene_idx is None:
-            log = "DE_Train: {:.4f}, R2 {:.4f} " \
-                  "DE_Validation: {:.4f}. R2 {:.4f} "
-            print(log.format(train_metrics['mse_de'], train_metrics['r2_de'],
-                             val_metrics['mse_de'], val_metrics['r2_de']))
-            
-            if args['wandb']:
-                wandb.log({'train_de_mse': train_metrics['mse_de'],
-                         'train_de_r2': train_metrics['r2_de'],
-                         'val_de_mse': val_metrics['mse_de'],
-                         'val_de_r2': val_metrics['r2_de']})
+        log = "DE_Train: {:.4f}, R2 {:.4f} " \
+              "DE_Validation: {:.4f}. R2 {:.4f} "
+        print(log.format(train_metrics['mse_de'], train_metrics['r2_de'],
+                         val_metrics['mse_de'], val_metrics['r2_de']))
+
+        if args['wandb']:
+            wandb.log({'train_de_mse': train_metrics['mse_de'],
+                     'train_de_r2': train_metrics['r2_de'],
+                     'val_de_mse': val_metrics['mse_de'],
+                     'val_de_r2': val_metrics['r2_de']})
             
             
         # Select best model
@@ -118,13 +117,11 @@ def trainer(args):
 
     print('Training '+ args['modelname'] + '_' + args['exp_name'])
 
-    # Set up data loaders
-    # Using this for setting up background graph (with linear weights)
-    l_model = linear_model(args['species'], args['regulon_name'],
-                           args['gene_list'], args['adjacency'])
+    # Set up message passing network
+    network = Network(args['network_name'], args['gene_list'])
 
     # Pertrubation dataloader
-    pertdl = PertDataloader(adata, l_model.G, l_model.read_weights, args)
+    pertdl = PertDataloader(adata, network, network.read_weights, args)
 
     # Compute number of features for each node
     item = [item for item in pertdl.loaders['train_loader']][0]
@@ -190,7 +187,7 @@ def parse_arguments():
     # dataset arguments
     parser = argparse.ArgumentParser(description='Perturbation response')
     parser.add_argument('--fname', type=str,
-                        default='./datasets/Norman2019_prep_new_TFcombosin5k_nocombo_somesingle_worstde_numsamples_1_new_method.h5ad')
+                        default='/dfs/project/perturb-gnn/datasets/Norman2019_prep_new_TFcombosin5k_nocombo_somesingle_worstde_numsamples_1_new_method.h5ad')
     parser.add_argument('--perturbation_key', type=str, default="condition")
     parser.add_argument('--species', type=str, default="human")
     parser.add_argument('--split_key', type=str, default="split_yhr_TFcombos")
@@ -200,11 +197,9 @@ def parse_arguments():
     parser.add_argument('--edge_attr', type=bool, default=True)
 
     # network arguments
-    parser.add_argument('--regulon_name', type=str,
-                        default='Norman2019_ctrl_only')
-    parser.add_argument('--adjacency', type=str,
-                        default='/dfs/user/yhr/cell_reprogram/Data'
-                    '/learnt_weights/Norman2019_ctrl_only_learntweights.csv')
+    parser.add_argument('--network_name', type=str,
+                        default='/dfs/project/perturb-gnn/graphs/STRING_full_9606.csv',
+                        help='select network to use')
 
     # training arguments
     parser.add_argument('--device', type=str, default='cuda:9')
