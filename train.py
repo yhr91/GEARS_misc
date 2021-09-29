@@ -14,9 +14,14 @@ sys.path.append('/dfs/user/yhr/cell_reprogram/model/')
 
 
 def train(model, train_loader, val_loader, args, device="cpu", gene_idx=None):
+    if args['wandb']:
+        import wandb
+        
     optimizer = optim.Adam(model.parameters(), lr=args['lr'], weight_decay=5e-4)
     min_val = np.inf
-
+    
+    print('Start Training...')
+    
     for epoch in range(args["max_epochs"]):
         total_loss = 0
         model.train()
@@ -36,14 +41,17 @@ def train(model, train_loader, val_loader, args, device="cpu", gene_idx=None):
             optimizer.step()
             total_loss += loss.item() * batch.num_graphs
             num_graphs += batch.num_graphs
-
+            
+            if args['wandb']:
+                wandb.log({'training_loss': loss.item()})
+        
         # Evaluate model performance on train and val set
         total_loss /= num_graphs
         train_res = evaluate(train_loader, model, args, gene_idx=gene_idx)
         val_res = evaluate(val_loader, model, args, gene_idx=gene_idx)
         train_metrics, _ = compute_metrics(train_res, gene_idx=gene_idx)
         val_metrics, _ = compute_metrics(val_res, gene_idx=gene_idx)
-
+        
         # Print epoch performance
         log = "Epoch {}: Train: {:.4f}, R2 {:.4f} " \
               "Validation: {:.4f}. R2 {:.4f} " \
@@ -51,14 +59,28 @@ def train(model, train_loader, val_loader, args, device="cpu", gene_idx=None):
         print(log.format(epoch + 1, train_metrics['mse'], train_metrics['r2'],
                          val_metrics['mse'], val_metrics['r2'],
                          total_loss))
-
+        
+        if args['wandb']:
+            wandb.log({'train_mse': train_metrics['mse'],
+                     'train_r2': train_metrics['r2'],
+                     'val_mse': val_metrics['mse'],
+                     'val_r2': val_metrics['r2']})
+        
+        
         # Print epoch performance for DE genes
         if gene_idx is None:
             log = "DE_Train: {:.4f}, R2 {:.4f} " \
                   "DE_Validation: {:.4f}. R2 {:.4f} "
             print(log.format(train_metrics['mse_de'], train_metrics['r2_de'],
                              val_metrics['mse_de'], val_metrics['r2_de']))
-
+            
+            if args['wandb']:
+                wandb.log({'train_de_mse': train_metrics['mse_de'],
+                         'train_de_r2': train_metrics['r2_de'],
+                         'val_de_mse': val_metrics['mse_de'],
+                         'val_de_r2': val_metrics['r2_de']})
+            
+            
         # Select best model
         if val_metrics['mse'] < min_val:
             min_val = val_metrics['mse']
@@ -68,6 +90,20 @@ def train(model, train_loader, val_loader, args, device="cpu", gene_idx=None):
 
 
 def trainer(args):
+    
+    ## wandb exp name setup
+    
+    if args['GNN_simple']:
+        exp_name = 'GNN_Simple'
+    elif args['GNN_AE']:
+        exp_name = 'GNN_AE'
+        
+        
+    if args['wandb']:
+        import wandb
+        wandb.init(project=args['project_name'], entity=args['entity_name'], name=exp_name)
+        wandb.config.update(args)
+    
     adata = sc.read_h5ad(args['fname'])
     gene_list = [f for f in adata.var.gene_symbols.values]
     args['gene_list'] = gene_list
@@ -129,7 +165,11 @@ def trainer(args):
         log = "Final best performing model" + str(itr) +\
               ": Test_DE: {:.4f}, R2 {:.4f} "
         print(log.format(test_metrics['mse_de'], test_metrics['r2_de']))
-
+        
+        if args['wandb']:
+            wandb.log({'Test_DE_MSE': test_metrics['mse_de'],
+                      'Test_R2': test_metrics['r2_de']})
+        
     # Save model outputs and best model
     np.save('./saved_metrics/'+args['modelname']
             + '_'+ args['exp_name'],
@@ -213,7 +253,14 @@ def parse_arguments():
                         help='Filter edges based on applied perturbation')
     parser.add_argument('--data_suffix', type=str, default='_pert_feats',
                         help='Suffix to add to dataloader file and modelname')
-
+    
+    parser.add_argument('--wandb', type=bool, default=False,
+                    help='Use wandb or not')
+    parser.add_argument('--project_name', type=str, default='pert_gnn_v1',
+                        help='project name')
+    parser.add_argument('--entity_name', type=str, default='kexinhuang',
+                        help='entity name')
+    
     return dict(vars(parser.parse_args()))
 
 
