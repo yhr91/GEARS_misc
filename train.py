@@ -207,7 +207,7 @@ def parse_arguments():
     parser.add_argument('--pert_feats', type=bool, default=False,
                         help='Separate feature to indicate perturbation')
     parser.add_argument('--pert_delta', type=bool, default=False,
-                        help='Represented perturbed cells using delta gene '
+                        help='Represent perturbed cells using delta gene '
                              'expression')
     parser.add_argument('--edge_filter', type=bool, default=False,
                         help='Filter edges based on applied perturbation')
