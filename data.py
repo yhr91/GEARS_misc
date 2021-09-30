@@ -22,7 +22,7 @@ class Network():
         self.gene_list = gene_list
         self.correct_node_list()
         self.G = self.create_graph()
-        self.weights = self.edge_list['score'].values
+        self.weights = self.edge_list['importance'].values
 
     def create_graph(self):
         G = nx.from_pandas_edgelist(self.edge_list, source='source',
@@ -31,6 +31,9 @@ class Network():
         return G
 
     def correct_node_list(self):
+        """
+        Remove nodes from graph that are not in the gene list
+        """
         gene_list_df = pd.DataFrame(self.gene_list, columns=['gene'])
         self.edge_list = self.edge_list.merge(gene_list_df, left_on='source',
                                               right_on='gene', how='inner')

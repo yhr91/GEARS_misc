@@ -121,7 +121,7 @@ def trainer(args):
     network = Network(args['network_name'], args['gene_list'])
 
     # Pertrubation dataloader
-    pertdl = PertDataloader(adata, network, network.read_weights, args)
+    pertdl = PertDataloader(adata, network, network.weights, args)
 
     # Compute number of features for each node
     item = [item for item in pertdl.loaders['train_loader']][0]
@@ -202,7 +202,7 @@ def parse_arguments():
                         help='select network to use')
 
     # training arguments
-    parser.add_argument('--device', type=str, default='cuda:9')
+    parser.add_argument('--device', type=str, default='cuda:8')
     parser.add_argument('--max_epochs', type=int, default=7)
     parser.add_argument('--lr', type=float, default=5e-3, help='learning rate')
     parser.add_argument('--node_hidden_size', type=int, default=2,
@@ -232,14 +232,14 @@ def parse_arguments():
                         help='whether to use AE after GNN, GNN_AE must be True')
 
     # Only one of these can be True
-    parser.add_argument('--GNN_simple', type=bool, default=False,
+    parser.add_argument('--GNN_simple', type=bool, default=True,
                         help='Use simple GNN')
-    parser.add_argument('--GNN_AE', type=bool, default=True,
+    parser.add_argument('--GNN_AE', type=bool, default=False,
                         help='Use GNN followed by AE')
 
 
     # Dataloader related
-    parser.add_argument('--pert_feats', type=bool, default=False,
+    parser.add_argument('--pert_feats', type=bool, default=True,
                         help='Separate feature to indicate perturbation')
     parser.add_argument('--pert_delta', type=bool, default=False,
                         help='Represent perturbed cells using delta gene '
