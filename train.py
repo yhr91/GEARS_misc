@@ -118,7 +118,8 @@ def trainer(args):
     print('Training '+ args['modelname'] + '_' + args['exp_name'])
 
     # Set up message passing network
-    network = Network(args['network_name'], args['gene_list'])
+    network = Network(fname=args['network_name'], gene_list=args['gene_list'],
+                      percentile=args['top_edge_percent'])
 
     # Pertrubation dataloader
     pertdl = PertDataloader(adata, network, network.weights, args)
@@ -200,6 +201,8 @@ def parse_arguments():
     parser.add_argument('--network_name', type=str,
                         default='/dfs/project/perturb-gnn/graphs/STRING_full_9606.csv',
                         help='select network to use')
+    parser.add_argument('--top_edge_percent', type=float, default=50,
+                        help='percentile of top edges to retain for graph')
 
     # training arguments
     parser.add_argument('--device', type=str, default='cuda:8')

@@ -17,16 +17,26 @@ class Network():
     """
     Reads in background network with associated weights
     """
-    def __init__(self, fname, gene_list):
-        self.edge_list = pd.read_csv(fname)
+    def __init__(self, fname, gene_list, percentile=None, feature='importance'):
         self.gene_list = gene_list
+        self.percentile = percentile
+        self.feature = feature
+
+        self.edge_list = pd.read_csv(fname)
         self.correct_node_list()
+        if self.percentile is not None:
+            self.get_top_edges()
+
         self.G = self.create_graph()
-        self.weights = self.edge_list['importance'].values
+        self.add_missing_nodes()
+        self.weights = self.edge_list[self.feature].values
 
     def create_graph(self):
+        """
+        Create networkx graph object
+        """
         G = nx.from_pandas_edgelist(self.edge_list, source='source',
-                        target='target', edge_attr=['importance'],
+                        target='target', edge_attr=[self.feature],
                         create_using=nx.DiGraph())
         return G
 
@@ -39,6 +49,25 @@ class Network():
                                               right_on='gene', how='inner')
         self.edge_list = self.edge_list.merge(gene_list_df, left_on='target',
                                               right_on='gene', how='inner')
+
+    def add_missing_nodes(self):
+        """
+        Add disconnected nodes to the graph that are in gene list but not in G
+        """
+
+        for n in self.gene_list:
+            if n not in self.G.nodes():
+                self.G.add_node(n)
+
+    def get_top_edges(self):
+        """
+        Get top edges from network
+        """
+        self.edge_list = self.edge_list.sort_values(self.feature,
+                                                    ascending=False)
+        num_top_edges = int(len(self.edge_list) * self.percentile/100)
+        self.edge_list = self.edge_list[:num_top_edges]
+        self.edge_list.sort_values('source')
 
 
 class PertDataloader():
