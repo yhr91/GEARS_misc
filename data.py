@@ -202,25 +202,8 @@ class PertDataloader():
 
         # Set edge features
         if self.args['edge_attr']:
-            edge_attr = self.weights.copy()
-            edge_attr.index = edge_attr.index.map(self.node_map)
-            edge_attr['target'] = edge_attr['target'].map(self.node_map)
-            edges_df = pd.DataFrame(edge_index_, columns=['TF', 'target'])
-
-            # Keep only those edges that have weights assigned
-            edge_attr = edge_attr.reset_index().merge(edges_df,
-                                    on=['TF', 'target'], how='inner')
-            edge_index_ = [(s,t) for s,t in zip(edge_attr['TF'].values,
-                                  edge_attr['target'].values)]
-            edge_attr = edge_attr['importance'].values
-            assert len(edge_attr) == len(edge_index_)
-
-            # This prevents PyG from throwing errors if it finds no edges
-            if len(edge_attr) == 0:
-                edge_index_ = [(0,0)]
-                edge_attr = [0]
-
-            edge_attr = torch.Tensor(edge_attr).unsqueeze(1)
+            assert len(self.weights) == len(self.G.edges)
+            edge_attr = torch.Tensor(self.weights).unsqueeze(1)
         else:
             edge_attr = None
 

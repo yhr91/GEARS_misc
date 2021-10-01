@@ -122,7 +122,7 @@ def trainer(args):
                       percentile=args['top_edge_percent'])
 
     # Pertrubation dataloader
-    pertdl = PertDataloader(adata, network, network.weights, args)
+    pertdl = PertDataloader(adata, network.G, network.weights, args)
 
     # Compute number of features for each node
     item = [item for item in pertdl.loaders['train_loader']][0]
@@ -249,7 +249,7 @@ def parse_arguments():
                              'expression')
     parser.add_argument('--edge_filter', default=False, action='store_true',
                         help='Filter edges based on applied perturbation')
-    parser.add_argument('--data_suffix', type=str, default='_pert_feats',
+    parser.add_argument('--data_suffix', type=str, default='_test',
                         help='Suffix to add to dataloader file and modelname')
     
     parser.add_argument('--wandb', default=False, action='store_true',
