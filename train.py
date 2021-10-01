@@ -89,9 +89,9 @@ def train(model, train_loader, val_loader, args, device="cpu", gene_idx=None):
 
 
 def trainer(args):
+    print(args)
     
     ## wandb exp name setup
-    
     if args['GNN_simple']:
         exp_name = 'GNN_Simple'
     elif args['GNN_AE']:
@@ -194,8 +194,8 @@ def parse_arguments():
     parser.add_argument('--split_key', type=str, default="split_yhr_TFcombos")
     parser.add_argument('--batch_size', type=int, default=100)
     parser.add_argument('--seed', type=int, default=0)
-    parser.add_argument('--binary_pert', type=bool, default=True)
-    parser.add_argument('--edge_attr', type=bool, default=True)
+    parser.add_argument('--binary_pert', default=True, action='store_false')
+    parser.add_argument('--edge_attr', default=True, action='store_false')
 
     # network arguments
     parser.add_argument('--network_name', type=str,
@@ -224,35 +224,35 @@ def parse_arguments():
                         help='number of iterations of complete model trianing')
     parser.add_argument('--pert_loss_wt', type=int, default=1,
                         help='weights for perturbed cells compared to control cells')
-    parser.add_argument('--edge_weights', type=bool, default=False,
+    parser.add_argument('--edge_weights', action='store_true', default=False,
                         help='whether to include linear edge weights during '
                              'GNN training')
     parser.add_argument('--GNN', type=str, default='GraphConv',
                         help='Which GNN to use form GCN/GraphConv/GATConv')
     parser.add_argument('--loss_type', type=str, default='micro',
                         help='micro averaged or not')
-    parser.add_argument('--encode', type=bool, default=False,
+    parser.add_argument('--encode', default=False, action='store_true',
                         help='whether to use AE after GNN, GNN_AE must be True')
 
     # Only one of these can be True
-    parser.add_argument('--GNN_simple', type=bool, default=True,
+    parser.add_argument('--GNN_simple', default=False, action='store_true',
                         help='Use simple GNN')
-    parser.add_argument('--GNN_AE', type=bool, default=False,
+    parser.add_argument('--GNN_AE',default=False, action='store_true',
                         help='Use GNN followed by AE')
 
 
     # Dataloader related
-    parser.add_argument('--pert_feats', type=bool, default=True,
+    parser.add_argument('--pert_feats', default=True, action='store_false',
                         help='Separate feature to indicate perturbation')
-    parser.add_argument('--pert_delta', type=bool, default=False,
+    parser.add_argument('--pert_delta', default=False, action='store_true',
                         help='Represent perturbed cells using delta gene '
                              'expression')
-    parser.add_argument('--edge_filter', type=bool, default=False,
+    parser.add_argument('--edge_filter', default=False, action='store_true',
                         help='Filter edges based on applied perturbation')
     parser.add_argument('--data_suffix', type=str, default='_pert_feats',
                         help='Suffix to add to dataloader file and modelname')
     
-    parser.add_argument('--wandb', type=bool, default=False,
+    parser.add_argument('--wandb', default=False, action='store_true',
                     help='Use wandb or not')
     parser.add_argument('--project_name', type=str, default='pert_gnn_v1',
                         help='project name')
