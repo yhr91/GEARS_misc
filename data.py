@@ -277,3 +277,125 @@ class PertDataloader():
         ood_split = list(ood_adata.obs['condition'].unique())
 
         return train_split, val_split, ood_split
+
+
+class DataSplitter():
+    """
+    Class for handling data splitting. This class is able to generate new
+    data splits and assign them as a new attribute to the data file.
+
+    """
+    def __init__(self, adata, split_type='single', seen=0):
+        self.adata = adata
+        self.split_type = split_type
+        self.seen = seen
+
+    def get_perts_from_genes(self, genes, pert_list, type_='both'):
+        """
+        Returns all single/combo/both perturbations that include a gene
+        """
+
+        single_perts = [p for p in pert_list if 'ctrl' in p]
+        combo_perts = [p for p in pert_list if 'ctrl' not in p]
+
+        perts = []
+        for gene in genes:
+            if type_ == 'single':
+                perts.extend([p for p in single_perts if gene in p])
+
+            if type_ == 'combo':
+                perts.extend([p for p in combo_perts if gene in p])
+
+            if type_ == 'both':
+                perts.extend([p for p in pert_list if gene in p])
+
+        return perts
+
+    def get_genes_from_perts(self, perts):
+        """
+        Returns list of genes involved in a given perturbation list
+        """
+
+        if type(perts) is str:
+            perts = [perts]
+        gene_list = [p.split('+') for p in np.unique(perts)]
+        gene_list = [item for sublist in gene_list for item in sublist]
+        gene_list = [g for g in gene_list if g != 'ctrl']
+        return np.unique(gene_list)
+
+    def split_data(self, test_size=0.1, test_pert_genes=None,
+                   test_perts=None, split_name='split'):
+        """
+        Split dataset and adds split as a column to the dataframe
+        """
+
+        unique_perts = [p for p in self.adata.obs['condition'].unique() if
+                        p != 'ctrl']
+        train, test = self.get_split_list(unique_perts,
+                                          test_pert_genes=test_pert_genes,
+                                          test_perts=test_perts,
+                                          test_size=test_size)
+        train, val = self.get_split_list(train, test_size=test_size)
+
+        map_dict = {x: 'train' for x in train}
+        map_dict.update({x: 'val' for x in val})
+        map_dict.update({x: 'test' for x in test})
+
+        self.adata.obs[split_name] = self.adata.obs['condition'].map(map_dict)
+        return self.adata
+
+    def get_split_list(self, pert_list, test_size=0.1,
+                       test_pert_genes=None, test_perts=None):
+        """
+        Splits a given perturbation list into train and test with no shared
+        perturbations
+        """
+
+        single_perts = [p for p in pert_list if 'ctrl' in p and p != 'ctrl']
+        combo_perts = [p for p in pert_list if 'ctrl' not in p]
+        unique_pert_genes = self.get_genes_from_perts(pert_list)
+
+        # Only single genes (train and test)
+        if self.split_type == 'single':
+            if test_pert_genes is None:
+                test_pert_genes = np.random.choice(unique_pert_genes,
+                                                   int(len(
+                                                       single_perts) * test_size))
+            test_perts = self.get_perts_from_genes(test_pert_genes, pert_list,
+                                                   'single')
+
+        elif self.split_type == 'combo':
+            if self.seen == 0:
+                if test_pert_genes is None:
+                    test_pert_genes = np.random.choice(unique_pert_genes,
+                                                       int(len(
+                                                           single_perts) * test_size))
+                test_perts = self.get_perts_from_genes(test_pert_genes,
+                                                       pert_list, 'both')
+
+            elif self.seen == 1:
+                if test_pert_genes is None:
+                    test_pert_genes = np.random.choice(unique_pert_genes,
+                                                       int(len(
+                                                           single_perts) * test_size))
+
+                single_perts = self.get_perts_from_genes(test_pert_genes,
+                                                         pert_list, 'single')
+                combo_perts = self.get_perts_from_genes(test_pert_genes,
+                                                        pert_list, 'combo')
+
+                # This just checks that none of the combos have 2 unseen genes
+                hold_out = [t for t in combo_perts if
+                            len([t for t in t.split('+') if
+                                 t not in test_pert_genes]) > 1]
+                combo_perts = [c for c in combo_perts if c not in hold_out]
+                test_perts = single_perts + combo_perts
+
+            elif self.seen == 2:
+                if test_perts is None:
+                    test_perts = np.random.choice(combo_perts,
+                                                  int(len(
+                                                      combo_perts) * test_size))
+
+        train_perts = [p for p in pert_list if p not in test_perts]
+        return train_perts, test_perts
