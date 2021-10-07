@@ -102,10 +102,19 @@ class PertDataloader():
         if os.path.isfile(saved_graphs_fname):
             cell_graphs = pickle.load(open(saved_graphs_fname, "rb"))
         else:
+            # First split dataset (if needed)
+            if self.args['data_split'] is not None:
+                split_type, seen = self.args['data_split'].split(',')
+                DS = DataSplitter(self.adata, split_type=split_type,
+                                  seen=int(seen))
+                self.adata = DS.split_data(test_size=0.1, split_name='split',
+                                           seed=self.args['seed'])
+
+            # Create cell graphs
             cell_graphs = {}
             cell_graphs['train'] = self.create_split_dataloader('train')
-            cell_graphs['val'] = self.create_split_dataloader('test')
-            cell_graphs['ood'] = self.create_split_dataloader('ood')
+            cell_graphs['val'] = self.create_split_dataloader('val')
+            cell_graphs['test'] = self.create_split_dataloader('test')
             # Save graphs
             pickle.dump(cell_graphs, open(saved_graphs_fname, "wb"))
 
@@ -114,13 +123,13 @@ class PertDataloader():
                             batch_size=self.args['batch_size'], shuffle=True)
         val_loader = DataLoader(cell_graphs['val'],
                             batch_size=self.args['batch_size'], shuffle=True)
-        ood_loader = DataLoader(cell_graphs['ood'],
+        test_loader = DataLoader(cell_graphs['test'],
                             batch_size=self.args['batch_size'], shuffle=True)
 
         print("Dataloaders created")
         return {'train_loader': train_loader,
                 'val_loader': val_loader,
-                'ood_loader': ood_loader}
+                'test_loader': test_loader}
 
     def create_split_dataloader(self, split='train'):
         """
@@ -263,20 +272,19 @@ class PertDataloader():
 
     def get_train_test_split(self):
         """
-        Get train, validation ('test' following naming convention from
-        Lotfollahi) and test set ('ood') split from input data
+        Get train, validation and test set split from input data
         """
 
         adata = sc.read(self.args['fname'])
         train_adata = adata[adata.obs[self.args['split_key']] == 'train']
-        val_adata = adata[adata.obs[self.args['split_key']] == 'test']
-        ood_adata = adata[adata.obs[self.args['split_key']] == 'ood']
+        val_adata = adata[adata.obs[self.args['split_key']] == 'val']
+        test_adata = adata[adata.obs[self.args['split_key']] == 'test']
 
         train_split = list(train_adata.obs['condition'].unique())
         val_split = list(val_adata.obs['condition'].unique())
-        ood_split = list(ood_adata.obs['condition'].unique())
+        test_split = list(test_adata.obs['condition'].unique())
 
-        return train_split, val_split, ood_split
+        return train_split, val_split, test_split
 
 
 class DataSplitter():
@@ -294,6 +302,8 @@ class DataSplitter():
                    test_perts=None, split_name='split', seed=None):
         """
         Split dataset and adds split as a column to the dataframe
+
+        Note: split categories are train, val, test
         """
         np.random.seed(seed=seed)
         unique_perts = [p for p in self.adata.obs['condition'].unique() if
@@ -307,8 +317,15 @@ class DataSplitter():
         map_dict = {x: 'train' for x in train}
         map_dict.update({x: 'val' for x in val})
         map_dict.update({x: 'test' for x in test})
+        map_dict.update({'ctrl': 'train'})
 
         self.adata.obs[split_name] = self.adata.obs['condition'].map(map_dict)
+
+        # Add some control to the validation set
+        ctrl_idx = self.adata.obs_names[self.adata.obs['condition'] == 'ctrl']
+        val_ctrl = np.random.choice(ctrl_idx, int(len(ctrl_idx) * test_size))
+        self.adata.obs.at[val_ctrl, 'split'] = 'val'
+
         return self.adata
 
     def get_split_list(self, pert_list, test_size=0.1,

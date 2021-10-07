@@ -5,7 +5,7 @@ import numpy as np
 
 import argparse
 from model import linear_model, simple_GNN, simple_GNN_AE
-from data import PertDataloader, Network
+from data import PertDataloader, Network, DataSplitter
 from copy import deepcopy
 from inference import evaluate, compute_metrics
 
@@ -131,7 +131,6 @@ def trainer(args):
     # Train a model
     all_test_pert_res = []
     # Run training 3 times to measure variability of result
-    # TODO check if random seeds need to be changed here
     for itr in range(args['num_itr']):
 
         # Define model
@@ -157,7 +156,7 @@ def trainer(args):
                                pertdl.loaders['val_loader'],
                                args, device=args["device"])
 
-        test_res = evaluate(pertdl.loaders['ood_loader'], best_model, args)
+        test_res = evaluate(pertdl.loaders['test_loader'], best_model, args)
         test_metrics, test_pert_res = compute_metrics(test_res)
         all_test_pert_res.append(test_pert_res)
         log = "Final best performing model" + str(itr) +\
@@ -191,11 +190,13 @@ def parse_arguments():
                         default='/dfs/project/perturb-gnn/datasets/Norman2019_prep_new_TFcombosin5k_nocombo_somesingle_worstde_numsamples_1_new_method.h5ad')
     parser.add_argument('--perturbation_key', type=str, default="condition")
     parser.add_argument('--species', type=str, default="human")
-    parser.add_argument('--split_key', type=str, default="split_yhr_TFcombos")
     parser.add_argument('--batch_size', type=int, default=100)
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--binary_pert', default=True, action='store_false')
     parser.add_argument('--edge_attr', default=True, action='store_false')
+    parser.add_argument('--data_split', type=str, default=None,
+            help='Split type: <combo/single>,<# seen genes>, eg: combo,0')
+    parser.add_argument('--split_key', type=str, default="split_yhr_TFcombos")
 
     # network arguments
     parser.add_argument('--network_name', type=str,
@@ -205,7 +206,8 @@ def parse_arguments():
                         help='percentile of top edges to retain for graph')
 
     # training arguments
-    parser.add_argument('--device', type=str, default='cuda:8')
+    parser.add_argument('--device', type=str,
+                        default=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     parser.add_argument('--max_epochs', type=int, default=7)
     parser.add_argument('--lr', type=float, default=5e-3, help='learning rate')
     parser.add_argument('--node_hidden_size', type=int, default=2,
