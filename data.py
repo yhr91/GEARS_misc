@@ -321,28 +321,21 @@ class DataSplitter():
         single_perts = [p for p in pert_list if 'ctrl' in p and p != 'ctrl']
         combo_perts = [p for p in pert_list if 'ctrl' not in p]
         unique_pert_genes = self.get_genes_from_perts(pert_list)
+        if test_pert_genes is None:
+            test_pert_genes = np.random.choice(unique_pert_genes,
+                                        int(len(single_perts) * test_size))
 
         # Only single genes (train and test)
         if self.split_type == 'single':
-            if test_pert_genes is None:
-                test_pert_genes = np.random.choice(unique_pert_genes,
-                                        int(len(single_perts) * test_size))
             test_perts = self.get_perts_from_genes(test_pert_genes, pert_list,
                                                    'single')
 
         elif self.split_type == 'combo':
             if self.seen == 0:
-                if test_pert_genes is None:
-                    test_pert_genes = np.random.choice(unique_pert_genes,
-                                         int(len(single_perts) * test_size))
                 test_perts = self.get_perts_from_genes(test_pert_genes,
                                                        pert_list, 'both')
 
             elif self.seen == 1:
-                if test_pert_genes is None:
-                    test_pert_genes = np.random.choice(unique_pert_genes,
-                                          int(len(single_perts) * test_size))
-
                 single_perts = self.get_perts_from_genes(test_pert_genes,
                                                          pert_list, 'single')
                 combo_perts = self.get_perts_from_genes(test_pert_genes,
