@@ -110,7 +110,7 @@ def trainer(args):
         wandb.init(project=args['project_name'], entity=args['entity_name'], name=exp_name)
         wandb.config.update(args)
     
-    adata = sc.read_h5ad(args['fname'])
+    adata = sc.read_h5ad(args['work_dir'] + 'datasets/' + args['fname'])
     gene_list = [f for f in adata.var.gene_symbols.values]
 
     args['gene_list'] = gene_list
@@ -129,7 +129,8 @@ def trainer(args):
     print('Experiment:' + args['exp_name'])
 
     # Set up message passing network
-    network = Network(fname=args['network_name'], gene_list=args['gene_list'],
+    network = Network(fname=args['work_dir'] + 'graphs/' +args['network_name'],
+                      gene_list=args['gene_list'],
                       percentile=args['top_edge_percent'])
 
     # Pertrubation dataloader
@@ -183,13 +184,13 @@ def trainer(args):
                       'Test_R2': test_metrics['r2_de']})
         
     # Save model outputs and best model
-    np.save('./saved_metrics/'+args['modelname']
+    np.save(args['work_dir'] + 'saved_metrics/'+args['modelname']
             + '_'+ args['exp_name'],
             all_test_pert_res)
-    np.save('./saved_args/'
+    np.save(args['work_dir'] + 'saved_args/'
             + args['modelname']
             + '_'+ args['exp_name'], args)
-    torch.save(best_model, './saved_models/full_model_'
+    torch.save(best_model, args['work_dir'] + 'saved_models/full_model_'
                +args['modelname']
                +'_'+ args['exp_name'])
 
@@ -201,8 +202,9 @@ def parse_arguments():
 
     # dataset arguments
     parser = argparse.ArgumentParser(description='Perturbation response')
+    parser.add_argument('--work_dir', type=str, default='/dfs/project/perturb-gnn/')
     parser.add_argument('--fname', type=str,
-                        default='/dfs/project/perturb-gnn/datasets/Norman2019_hvg+perts_combo_seen0_split1.h5ad')
+                        default='Norman2019_hvg+perts_combo_seen0_split1.h5ad')
     parser.add_argument('--perturbation_key', type=str, default="condition")
     parser.add_argument('--species', type=str, default="human")
     parser.add_argument('--batch_size', type=int, default=20)
@@ -217,14 +219,15 @@ def parse_arguments():
 
     # network arguments
     parser.add_argument('--network_name', type=str,
-                        default='/dfs/project/perturb-gnn/graphs/STRING_full_9606.csv',
-                        help='select network to use')
-    parser.add_argument('--top_edge_percent', type=float, default=25,
+                        default='STRING_full_9606.csv', help='select network')
+    parser.add_argument('--top_edge_percent', type=float, default=50,
                         help='percentile of top edges to retain for graph')
 
     # training arguments
     parser.add_argument('--device', type=str,
-                        default=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+                        default='cuda:3')
+                        #default=torch.device("cuda" if
+                        # torch.cuda.is_available() else "cpu"))
     parser.add_argument('--max_epochs', type=int, default=7)
     parser.add_argument('--lr', type=float, default=5e-3, help='learning rate')
     parser.add_argument('--node_hidden_size', type=int, default=2,

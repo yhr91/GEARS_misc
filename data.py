@@ -99,7 +99,8 @@ class PertDataloader():
         """
         print("Creating dataloaders")
         # Check if graphs have already been created and saved
-        saved_graphs_fname = './saved_graphs/' + self.args['modelname'] + '.pkl'
+        saved_graphs_fname = self.args['work_dir'] + '/dataloaders/' + \
+                             self.args['modelname'] + '.pkl'
         if os.path.isfile(saved_graphs_fname):
             cell_graphs = pickle.load(open(saved_graphs_fname, "rb"))
         else:
