@@ -87,6 +87,7 @@ class PertDataloader():
         self.G = G
         self.weights = weights
         self.node_map = {x: it for it, x in enumerate(adata.var.gene_symbols)}
+        self.edge_index, self.edge_attr = self.compute_edge_index()
         self.binary_pert=binary_pert
         self.gene_names = self.adata.var.gene_symbols
         self.loaders = self.create_dataloaders()
@@ -115,6 +116,7 @@ class PertDataloader():
             cell_graphs['train'] = self.create_split_dataloader('train')
             cell_graphs['val'] = self.create_split_dataloader('val')
             cell_graphs['test'] = self.create_split_dataloader('test')
+            cell_graphs['graph'] = self.edge_index
             # Save graphs
             pickle.dump(cell_graphs, open(saved_graphs_fname, "wb"))
 
@@ -129,7 +131,9 @@ class PertDataloader():
         print("Dataloaders created")
         return {'train_loader': train_loader,
                 'val_loader': val_loader,
-                'test_loader': test_loader}
+                'test_loader': test_loader,
+                'edge_index': self.edge_index,
+                'edge_attr': self.edge_attr}
 
     def create_split_dataloader(self, split='train'):
         """
@@ -137,9 +141,11 @@ class PertDataloader():
         """
         split_adata = self.adata[self.adata.obs[self.args['split_key']] == split]
         split_dl = []
+
         for p in split_adata.obs[self.args['perturbation_key']].unique():
-            split_dl.extend(self.create_cell_graph_dataset(split_adata,
-                            p, num_samples=self.args['num_ctrl_samples']))
+            cell_graph_dataset = self.create_cell_graph_dataset(
+                split_adata, p, num_samples=self.args['num_ctrl_samples'])
+            split_dl.extend(cell_graph_dataset)
         shuffle(split_dl)
         return split_dl
 
@@ -198,28 +204,28 @@ class PertDataloader():
                 y = y.T
                 feature_mat = temp
 
-        # Set up edges
+        # In case network is different between different perturbations
         if self.args['edge_filter']:
             if pert_idx is not None:
                 edge_index_ = [(self.node_map[e[0]], self.node_map[e[1]]) for e in
                               self.G.edges if self.node_map[e[0]] in pert_idx]
             else:
                 edge_index_ = []
+            edge_index = torch.tensor(edge_index_, dtype=torch.long).T
         else:
-            edge_index_ = [(self.node_map[e[0]], self.node_map[e[1]]) for e in
-                          self.G.edges]
-
-        # Set edge features
-        if self.args['edge_attr']:
-            assert len(self.weights) == len(self.G.edges)
-            edge_attr = torch.Tensor(self.weights).unsqueeze(1)
-        else:
-            edge_attr = None
-
-        edge_index = torch.tensor(edge_index_, dtype=torch.long).T
+            edge_index = self.edge_index
 
         # Create graph dataset
-        return Data(x=feature_mat, edge_index=edge_index, edge_attr=edge_attr,
+        # We'll save the graph structure separately because it leads to a lot
+        # of redundant memory usage between samples
+        if self.args['save_single_graph']:
+            save_graph = None
+            save_attr = None
+        else:
+            save_graph = edge_index
+            save_attr = self.edge_attr
+
+        return Data(x=feature_mat, edge_index=save_graph, edge_attr=save_attr,
                     y=torch.Tensor(y), de_idx=de_idx, pert=pert)
 
     def create_cell_graph_dataset(self, split_adata, pert_category,
@@ -264,8 +270,8 @@ class PertDataloader():
         # Create cell graphs
         cell_graphs = []
         for X, y in zip(Xs, ys):
-            cell_graphs.append(self.create_cell_graph(X.toarray(), y.toarray(),
-                                            de_idx, pert_category, pert_idx))
+            cell_graphs.append(self.create_cell_graph(X.toarray(),
+                                y.toarray(), de_idx, pert_category, pert_idx))
 
         return cell_graphs
 
@@ -285,6 +291,25 @@ class PertDataloader():
         test_split = list(test_adata.obs['condition'].unique())
 
         return train_split, val_split, test_split
+
+    def compute_edge_index(self):
+        """
+        Note: Assumes common graph shared by all cells
+        In most cases, the same graph is shared by all cells and this can be
+        represented in the PyG edge index format
+        """
+        edge_index_ = [(self.node_map[e[0]], self.node_map[e[1]]) for e in
+                      self.G.edges]
+        edge_index = torch.tensor(edge_index_, dtype=torch.long).T
+
+        # Set edge features
+        if self.args['edge_attr']:
+            assert len(self.weights) == len(self.G.edges)
+            edge_attr = torch.Tensor(self.weights).unsqueeze(1)
+        else:
+            edge_attr = None
+
+        return edge_index, edge_attr
 
 
 class DataSplitter():

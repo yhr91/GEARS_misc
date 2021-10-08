@@ -13,7 +13,8 @@ import sys
 sys.path.append('/dfs/user/yhr/cell_reprogram/model/')
 
 
-def train(model, train_loader, val_loader, args, device="cpu", gene_idx=None):
+def train(model, train_loader, val_loader, graph, weights, args,
+          device="cpu", gene_idx=None):
     if args['wandb']:
         import wandb
         
@@ -30,9 +31,13 @@ def train(model, train_loader, val_loader, args, device="cpu", gene_idx=None):
         for batch in train_loader:
 
             batch.to(device)
+            graph = graph.to(device)
+            if weights is not None:
+                weights = weights.to(device)
             model.to(device)
             optimizer.zero_grad()
-            pred = model(batch)
+
+            pred = model(batch, graph, weights)
             y = batch.y
 
             # Compute loss
@@ -47,8 +52,10 @@ def train(model, train_loader, val_loader, args, device="cpu", gene_idx=None):
         
         # Evaluate model performance on train and val set
         total_loss /= num_graphs
-        train_res = evaluate(train_loader, model, args, gene_idx=gene_idx)
-        val_res = evaluate(val_loader, model, args, gene_idx=gene_idx)
+        train_res = evaluate(train_loader, graph, weights, model,
+                             args, gene_idx=gene_idx)
+        val_res = evaluate(val_loader, graph, weights, model,
+                           args, gene_idx=gene_idx)
         train_metrics, _ = compute_metrics(train_res, gene_idx=gene_idx)
         val_metrics, _ = compute_metrics(val_res, gene_idx=gene_idx)
         
@@ -105,6 +112,7 @@ def trainer(args):
     
     adata = sc.read_h5ad(args['fname'])
     gene_list = [f for f in adata.var.gene_symbols.values]
+
     args['gene_list'] = gene_list
     args['num_genes'] = len(gene_list)
     args['modelname'] = args['fname'].split('/')[-1].split('.h5ad')[0] + \
@@ -154,9 +162,13 @@ def trainer(args):
 
         best_model = train(model, pertdl.loaders['train_loader'],
                                pertdl.loaders['val_loader'],
+                               pertdl.loaders['edge_index'],
+                               pertdl.loaders['edge_attr'],
                                args, device=args["device"])
 
-        test_res = evaluate(pertdl.loaders['test_loader'], best_model, args)
+        test_res = evaluate(pertdl.loaders['test_loader'],
+                            pertdl.loaders['edge_index'],
+                            pertdl.loaders['edge_attr'],best_model, args)
         test_metrics, test_pert_res = compute_metrics(test_res)
         all_test_pert_res.append(test_pert_res)
         log = "Final best performing model" + str(itr) +\
@@ -187,16 +199,18 @@ def parse_arguments():
     # dataset arguments
     parser = argparse.ArgumentParser(description='Perturbation response')
     parser.add_argument('--fname', type=str,
-                        default='/dfs/project/perturb-gnn/datasets/Norman2019_prep_new_TFcombosin5k_nocombo_somesingle_worstde_numsamples_1_new_method.h5ad')
+                        default='/dfs/project/perturb-gnn/datasets/Norman2019_hvg+perts_combo_seen0_split1.h5ad')
     parser.add_argument('--perturbation_key', type=str, default="condition")
     parser.add_argument('--species', type=str, default="human")
-    parser.add_argument('--batch_size', type=int, default=100)
+    parser.add_argument('--batch_size', type=int, default=20)
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--binary_pert', default=True, action='store_false')
     parser.add_argument('--edge_attr', default=True, action='store_false')
     parser.add_argument('--data_split', type=str, default=None,
             help='Split type: <combo/single>,<# seen genes>, eg: combo,0')
-    parser.add_argument('--split_key', type=str, default="split_yhr_TFcombos")
+    parser.add_argument('--split_key', type=str, default="split")
+    parser.add_argument('--save_single_graph', default=True,
+                        action='store_true')
 
     # network arguments
     parser.add_argument('--network_name', type=str,
@@ -207,7 +221,9 @@ def parse_arguments():
 
     # training arguments
     parser.add_argument('--device', type=str,
-                        default=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+                        default='cuda:3')
+                        #default=torch.device("cuda" if
+    # torch.cuda.is_available() else "cpu"))
     parser.add_argument('--max_epochs', type=int, default=7)
     parser.add_argument('--lr', type=float, default=5e-3, help='learning rate')
     parser.add_argument('--node_hidden_size', type=int, default=2,
@@ -237,7 +253,7 @@ def parse_arguments():
                         help='whether to use AE after GNN, GNN_AE must be True')
 
     # Only one of these can be True
-    parser.add_argument('--GNN_simple', default=False, action='store_true',
+    parser.add_argument('--GNN_simple', default=True, action='store_true',
                         help='Use simple GNN')
     parser.add_argument('--GNN_AE',default=False, action='store_true',
                         help='Use GNN followed by AE')
@@ -251,7 +267,7 @@ def parse_arguments():
                              'expression')
     parser.add_argument('--edge_filter', default=False, action='store_true',
                         help='Filter edges based on applied perturbation')
-    parser.add_argument('--data_suffix', type=str, default='_test',
+    parser.add_argument('--data_suffix', type=str, default='_saved_graph',
                         help='Suffix to add to dataloader file and modelname')
     
     parser.add_argument('--wandb', default=False, action='store_true',

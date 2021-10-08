@@ -314,15 +314,23 @@ class simple_GNN(torch.nn.Module):
         else:
             self.incl_edge_weight = False
 
-    def forward(self, data):
+    def forward(self, data, graph, weights):
         x, edge_index, edge_attr, batch = data.x, data.edge_index, \
                                           data.edge_attr, data.batch
 
-        # 1. Obtain node embeddings
+        # Check whether to include weights (GCN)
+        """
         if self.incl_edge_weight:
             edge_weight = edge_attr
         else:
             edge_weight = None
+        """
+
+        # Check whether graph is included in batch, transform the grpah
+        # object to match the PyG format
+        if edge_index is None:
+            num_graphs = len(data.batch.unique())
+            edge_index = graph.repeat(1, num_graphs)
 
         x = self.conv1(x, edge_index=edge_index)
         #x = self.conv1(x, edge_index=edge_index, edge_weight=edge_weight)
@@ -391,15 +399,23 @@ class simple_GNN_AE(torch.nn.Module):
             [ae_hidden_size] + [ae_hidden_size] * ae_num_layers +
             [ae_output_size], last_layer_act='linear')
 
-    def forward(self, data):
+    def forward(self, data, graph, weights):
         x, edge_index, edge_attr, batch = data.x, data.edge_index, \
                                           data.edge_attr, data.batch
 
-        # 1. Obtain node embeddings
+        # Check whether to include weights (GCN)
+        """
         if self.incl_edge_weight:
             edge_weight = edge_attr
         else:
             edge_weight = None
+        """
+
+        # Check whether graph is included in batch, transform the grpah
+        # object to match the PyG format
+        if edge_index is None:
+            num_graphs = len(data.batch.unique())
+            edge_index = graph.repeat(1, num_graphs)
 
         x = self.conv1(x, edge_index=edge_index)
         #x = self.conv1(x, edge_index=edge_index, edge_weight=edge_weight)

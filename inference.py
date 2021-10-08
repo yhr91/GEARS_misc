@@ -4,7 +4,7 @@ import numpy as np
 from sklearn.metrics import r2_score
 from sklearn.metrics import mean_squared_error as mse
 
-def evaluate(loader, model, args, num_de_idx=20, gene_idx=None):
+def evaluate(loader, graph, weights, model, args, num_de_idx=20, gene_idx=None):
     """
     Run model in inference mode using a given data loader
     """
@@ -18,14 +18,18 @@ def evaluate(loader, model, args, num_de_idx=20, gene_idx=None):
     results = {}
 
     for batch in loader:
+
         batch.to(args['device'])
         model.to(args['device'])
+        graph = graph.to(args['device'])
+        if weights is not None:
+            weights = weights.to(args['device'])
         results = {}
         pert_cat.extend(batch.pert)
 
         with torch.no_grad():
 
-            p = model(batch)
+            p = model(batch, graph, weights)
             t = batch.y
 
             if gene_idx is not None:
