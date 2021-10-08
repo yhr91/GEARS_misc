@@ -115,15 +115,18 @@ def trainer(args):
 
     args['gene_list'] = gene_list
     args['num_genes'] = len(gene_list)
-    args['modelname'] = args['fname'].split('/')[-1].split('.h5ad')[0] + \
-                        args['data_suffix']
+    args['modelname'] = args['fname'].split('/')[-1].split('.h5ad')[0] + '_'\
+                        + args['network_name'].split('/')[-1].split('.')[0]+'_'\
+                        + str(args['top_edge_percent']) + '_' \
+                        + args['data_suffix']
 
     try:
         args['num_ctrl_samples'] = adata.uns['num_ctrl_samples']
     except:
         args['num_ctrl_samples'] = 1
 
-    print('Training '+ args['modelname'] + '_' + args['exp_name'])
+    print('Training '+ args['modelname'])
+    print('Experiment:' + args['exp_name'])
 
     # Set up message passing network
     network = Network(fname=args['network_name'], gene_list=args['gene_list'],
@@ -216,14 +219,12 @@ def parse_arguments():
     parser.add_argument('--network_name', type=str,
                         default='/dfs/project/perturb-gnn/graphs/STRING_full_9606.csv',
                         help='select network to use')
-    parser.add_argument('--top_edge_percent', type=float, default=50,
+    parser.add_argument('--top_edge_percent', type=float, default=25,
                         help='percentile of top edges to retain for graph')
 
     # training arguments
     parser.add_argument('--device', type=str,
-                        default='cuda:3')
-                        #default=torch.device("cuda" if
-    # torch.cuda.is_available() else "cpu"))
+                        default=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     parser.add_argument('--max_epochs', type=int, default=7)
     parser.add_argument('--lr', type=float, default=5e-3, help='learning rate')
     parser.add_argument('--node_hidden_size', type=int, default=2,
@@ -267,7 +268,7 @@ def parse_arguments():
                              'expression')
     parser.add_argument('--edge_filter', default=False, action='store_true',
                         help='Filter edges based on applied perturbation')
-    parser.add_argument('--data_suffix', type=str, default='_saved_graph',
+    parser.add_argument('--data_suffix', type=str, default='pert_feats',
                         help='Suffix to add to dataloader file and modelname')
     
     parser.add_argument('--wandb', default=False, action='store_true',
