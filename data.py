@@ -371,10 +371,18 @@ class DataSplitter():
             test_pert_genes = np.random.choice(unique_pert_genes,
                                         int(len(single_perts) * test_size))
 
-        # Only single genes (train and test)
-        if self.split_type == 'single':
+        # Only single unseen genes (in test set)
+        # Train contains both single and combos
+        if self.split_type == 'single' or self.split_type == 'single_only':
             test_perts = self.get_perts_from_genes(test_pert_genes, pert_list,
                                                    'single')
+            if self.split_type == 'single_only':
+                # Discard all combos
+                hold_out = combo_perts
+            else:
+                # Discard only those combos which contain test genes
+                hold_out = self.get_perts_from_genes(test_pert_genes, pert_list,
+                                                     'combo')
 
         elif self.split_type == 'combo':
             if self.seen == 0:
