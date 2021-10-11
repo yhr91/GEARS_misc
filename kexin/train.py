@@ -1,5 +1,6 @@
 from copy import deepcopy
 import argparse
+from time import time
 import sys
 sys.path.append('/dfs/user/yhr/cell_reprogram/model/')
 
@@ -61,7 +62,7 @@ def train(model, train_loader, val_loader, graph, weights, args, device="cpu", g
             if args['wandb']:
                 wandb.log({'training_loss': loss.item()})
                 
-            if step % 25 == 0:
+            if step % args["print_progress_steps"] == 0:
                 log = "Epoch {} Step {} Train Loss: {:.4f}" 
                 print(log.format(epoch + 1, step + 1, loss.item()))
         scheduler.step()
@@ -109,7 +110,11 @@ def train(model, train_loader, val_loader, graph, weights, args, device="cpu", g
 
 
 def trainer(args):
-    print(args)
+    print('---- Printing Arguments ----')
+    for i, j in args.items():
+        print(i + ': ' + str(j))
+    print('----------------------------')
+        
     ## exp name setup
     exp_name = args['model_backend'] + '_' + args['network_name'] + '_' + str(args['node_hidden_size']) + '_' + str(args['gnn_num_layers']) + '_' + args['loss_mode'] + '_' + args['dataset']
     
@@ -123,7 +128,7 @@ def trainer(args):
     
     if args['wandb']:
         import wandb        
-        wandb.init(project=args['project_name'], entity=args['entity_name'], name=exp_name)
+        wandb.init(project=args['project_name'] + '_' + args['split'], entity=args['entity_name'], name=exp_name)
         wandb.config.update(args)
         
     if args['network_name'] == 'string':
@@ -132,6 +137,7 @@ def trainer(args):
     if args['dataset'] == 'Norman2019':
         data_path = '/dfs/project/perturb-gnn/datasets/Norman2019_hvg+perts.h5ad'
     
+    s = time()
     adata = sc.read_h5ad(data_path)
     if 'gene_symbols' not in adata.var.columns.values:
         adata.var['gene_symbols'] = adata.var['gene_name']
@@ -157,9 +163,10 @@ def trainer(args):
     # Compute number of features for each node
     item = [item for item in pertdl.loaders['train_loader']][0]
     args['num_node_features'] = item.x.shape[1]
-
-    print('Building cell graph... ')
-
+    print('Finished data setup, in total takes ' + str((time() - s)/60)[:5] + ' min')
+    
+    print('Initializing model... ')
+    
     # Train a model
     # Define model
     if args['model'] == 'GNN_simple':
@@ -228,8 +235,7 @@ def trainer(args):
                             pertdl.loaders['edge_attr'],best_model, args)
     
     test_metrics, test_pert_res = compute_metrics(test_res)
-    log = "Final best performing model" + str(itr) +\
-          ": Test_DE: {:.4f}, R2 {:.4f} "
+    log = "Final best performing model: Test_DE: {:.4f}, R2 {:.4f} "
     print(log.format(test_metrics['mse_de'], test_metrics['r2_de']))
 
     if args['wandb']:
@@ -288,6 +294,7 @@ def parse_arguments():
     parser.add_argument('--lr_decay_factor', type=float, default=0.5)
     parser.add_argument('--weight_decay', type=float, default=5e-4)
     parser.add_argument('--batch_size', type=int, default=100)
+    parser.add_argument('--print_progress_steps', type=int, default=50)
                         
     # model arguments
     parser.add_argument('--node_hidden_size', type=int, default=2,
@@ -321,7 +328,7 @@ def parse_arguments():
     # wandb related
     parser.add_argument('--wandb', default=False, action='store_true',
                     help='Use wandb or not')
-    parser.add_argument('--project_name', type=str, default='pert_gnn_v1',
+    parser.add_argument('--project_name', type=str, default='pert_gnn',
                         help='project name')
     parser.add_argument('--entity_name', type=str, default='kexinhuang',
                         help='entity name')
