@@ -338,7 +338,7 @@ class simple_GNN_AE(torch.nn.Module):
 
         return decoded.squeeze()
 
-
+    
         
 class AE(torch.nn.Module):
     """
@@ -368,7 +368,21 @@ class AE(torch.nn.Module):
         decoded = self.decoder(encoded)
 
         return decoded
+    
+class No_Perturb(torch.nn.Module):
+    """
+    No Perturbation
+    """
 
+    def __init__(self):
+        super(No_Perturb, self).__init__()        
+
+    def forward(self, data, g, w):
+        
+        x = data.x
+        x = x[:, 0].reshape(*data.y.shape)
+        
+        return x
    
         
         

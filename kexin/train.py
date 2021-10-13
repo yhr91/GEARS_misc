@@ -12,7 +12,7 @@ import torch.optim as optim
 import torch.nn as nn
 from torch.optim.lr_scheduler import StepLR
 
-from model import linear_model, simple_GNN, simple_GNN_AE, GNN_Disentangle, AE
+from model import linear_model, simple_GNN, simple_GNN_AE, GNN_Disentangle, AE, No_Perturb
 from data import PertDataloader, Network
 from inference import evaluate, compute_metrics
 from utils import loss_fct
@@ -223,9 +223,15 @@ def trainer(args):
                        args['ae_num_layers'],
                        args['ae_hidden_size'],
                        args['loss_type'])
-
-
-    best_model = train(model, pertdl.loaders['train_loader'],
+        
+    elif args['model'] == 'No_Perturb':
+        model = No_Perturb()
+    
+    
+    if args['model'] == 'No_Perturb': 
+        best_model = model
+    else:
+        best_model = train(model, pertdl.loaders['train_loader'],
                               pertdl.loaders['val_loader'],
                               pertdl.loaders['edge_index'],
                               pertdl.loaders['edge_attr'],
@@ -239,12 +245,36 @@ def trainer(args):
     test_metrics, test_pert_res = compute_metrics(test_res)
     log = "Final best performing model: Test_DE: {:.4f}, R2 {:.4f} "
     print(log.format(test_metrics['mse_de'], test_metrics['r2_de']))
-
     if args['wandb']:
         metrics = ['mse', 'mae', 'spearman', 'pearson', 'r2']
         for m in metrics:
             wandb.log({'test_' + m: test_metrics[m],
-                       'test_de_'+m: test_metrics[m + '_de']})
+                       'test_de_'+m: test_metrics[m + '_de'],
+                       'test_de_macro_'+m: test_metrics[m + '_de_macro'],
+                       'test_macro_'+m: test_metrics[m + '_macro'],                       
+                      })
+            
+    if args['split'] == 'simulation':
+        subgroup = pertdl.subgroup
+        subgroup_analysis = {}
+        for name in subgroup['test_subgroup'].keys():
+            subgroup_analysis[name] = {}
+            for m in test_metrics.keys():
+                subgroup_analysis[name][m] = []
+
+        for name, pert_list in subgroup['test_subgroup'].items():
+            for pert in pert_list:
+                for m, res in test_pert_res[pert].items():
+                    subgroup_analysis[name][m].append(res)
+
+        for name, result in subgroup_analysis.items():
+            for m in result.keys():
+                subgroup_analysis[name][m] = np.mean(subgroup_analysis[name][m])
+                if args['wandb']:
+                    wandb.log({'test_' + name + '_' + m: subgroup_analysis[name][m]})
+
+                print('test_' + name + '_' + m + ': ' + str(subgroup_analysis[name][m]))
+        
                 
     print('Saving model....')
         
@@ -314,7 +344,7 @@ def parse_arguments():
     parser.add_argument('--ae_num_layers', type=int, default=2,
                         help='number of layers in autoencoder')
     
-    parser.add_argument('--model', choices = ['GNN_simple', 'GNN_AE', 'GNN_Disentangle', 'GNN_Disentangle_AE', 'AE'], 
+    parser.add_argument('--model', choices = ['GNN_simple', 'GNN_AE', 'GNN_Disentangle', 'GNN_Disentangle_AE', 'AE', 'No_Perturb'], 
                         type = str, default = 'GNN_AE', help='model name')
     parser.add_argument('--model_backend', choices = ['GCN', 'GAT', 'DeepGCN'], 
                         type = str, default = 'GAT', help='model name')    

@@ -89,6 +89,22 @@ def compute_metrics(results, gene_idx=None):
            'r2': r2_score
     }
     
+    ## macro
+    for m, fct in metric2fct.items():
+        if m in ['spearman', 'pearson']:
+            val = fct(results['pred'].reshape(-1,), results['truth'].reshape(-1,))[0]
+            val_de = fct(results['pred_de'].reshape(-1,), results['truth_de'].reshape(-1,))[0]
+            if np.isnan(val):
+                val = 0
+            if np.isnan(val_de):
+                val_de = 0
+        else:
+            val = fct(results['pred'].reshape(-1,), results['truth'].reshape(-1,))
+            val_de = fct(results['pred_de'].reshape(-1,), results['truth_de'].reshape(-1,))
+        metrics[m + '_macro'] = val
+        metrics[m + '_de_macro'] = val_de
+        
+    
     for m in metric2fct.keys():
         metrics[m] = []
         metrics[m + '_de'] = []
