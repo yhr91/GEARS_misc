@@ -299,13 +299,22 @@ class simple_GNN(torch.nn.Module):
     """
 
     def __init__(self, num_feats, num_genes, hidden_size, node_embed_size,
-                 incl_edge_weight, loss_type='micro'):
+                 incl_edge_weight, loss_type='micro', GNN='GCN',
+                 self_loops=False):
         super(simple_GNN, self).__init__()
 
         self.num_genes = num_genes
         self.node_embed_size = node_embed_size
-        self.conv1 = GATConv(num_feats, hidden_size)
-        self.conv2 = GATConv(hidden_size, hidden_size)
+        if GNN == 'GAT':
+            self.conv1 = GATConv(num_feats, hidden_size,
+                                 add_self_loops=self_loops)
+            self.conv2 = GATConv(hidden_size, hidden_size,
+                                 add_self_loops=self_loops)
+        elif GNN == 'GCN':
+            self.conv1 = GCNConv(num_feats, hidden_size,
+                                 add_self_loops=self_loops)
+            self.conv2 = GCNConv(hidden_size, hidden_size,
+                                 add_self_loops=self_loops)
         self.lin = Linear(hidden_size, node_embed_size)
         self.loss_type = loss_type
 
@@ -329,8 +338,11 @@ class simple_GNN(torch.nn.Module):
         # Check whether graph is included in batch, transform the grpah
         # object to match the PyG format
         if edge_index is None:
+            edge_index = graph
+            """
             num_graphs = len(data.batch.unique())
             edge_index = graph.repeat(1, num_graphs)
+            """
 
         x = self.conv1(x, edge_index=edge_index)
         #x = self.conv1(x, edge_index=edge_index, edge_weight=edge_weight)
@@ -349,20 +361,27 @@ class simple_GNN(torch.nn.Module):
         if self.loss_type == 'micro':
             mse_p = torch.nn.MSELoss()
             perts = np.array(perts)
-            losses = torch.tensor(0.0, requires_grad=True).to(pred.device)
+            losses = None
+            #losses = torch.tensor(0.0, requires_grad=True).to(pred.device)
             for p in set(perts):
                 pred_p = pred[np.where(perts==p)[0]]
                 y_p = y[np.where(perts==p)[0]]
-                losses += mse_p(pred_p, y_p)
+                if losses is None:
+                    losses = mse_p(pred_p, y_p)
+                else:
+                    losses += mse_p(pred_p, y_p)
             return losses/(len(set(perts)))
 
         else:
+            return torch.nn.functional.mse_loss(pred, y)
+            """
             # Weigh the loss for perturbations
             weights = np.ones(len(pred))
             non_ctrl_idx = np.where([('ctrl' != p) for p in perts])[0]
             weights[non_ctrl_idx] = weight
             loss = weighted_mse_loss(pred, y, torch.Tensor(weights).to(pred.device))
             return loss
+            """
 
 
 class simple_GNN_AE(torch.nn.Module):

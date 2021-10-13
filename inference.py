@@ -33,7 +33,7 @@ def evaluate(loader, graph, weights, model, args, num_de_idx=20, gene_idx=None):
             t = batch.y
 
             if gene_idx is not None:
-                if not args['single_out']:
+                if not args['single_gene_out']:
                     p = p[:,gene_idx]
                 t = t[:,gene_idx]
 

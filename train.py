@@ -4,8 +4,8 @@ import scanpy as sc
 import numpy as np
 
 import argparse
-from model import linear_model, simple_GNN, simple_GNN_AE
-from data import PertDataloader, Network, DataSplitter
+from model import simple_GNN, simple_GNN_AE
+from data import PertDataloader, Network
 from copy import deepcopy
 from inference import evaluate, compute_metrics
 
@@ -120,11 +120,6 @@ def trainer(args):
                         + str(args['top_edge_percent']) + '_' \
                         + args['data_suffix']
 
-    try:
-        args['num_ctrl_samples'] = adata.uns['num_ctrl_samples']
-    except:
-        args['num_ctrl_samples'] = 1
-
     print('Training '+ args['modelname'])
     print('Experiment:' + args['exp_name'])
 
@@ -204,7 +199,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description='Perturbation response')
     parser.add_argument('--work_dir', type=str, default='/dfs/project/perturb-gnn/')
     parser.add_argument('--fname', type=str,
-                        default='Norman2019_hvg+perts_combo_seen0_split1.h5ad')
+                        default='Norman2019_hvg+perts_combo_seen0_split.h5ad')
     parser.add_argument('--perturbation_key', type=str, default="condition")
     parser.add_argument('--species', type=str, default="human")
     parser.add_argument('--batch_size', type=int, default=20)
@@ -220,7 +215,7 @@ def parse_arguments():
     # network arguments
     parser.add_argument('--network_name', type=str,
                         default='STRING_full_9606.csv', help='select network')
-    parser.add_argument('--top_edge_percent', type=float, default=50,
+    parser.add_argument('--top_edge_percent', type=float, default=25,
                         help='percentile of top edges to retain for graph')
 
     # training arguments
@@ -228,7 +223,7 @@ def parse_arguments():
                         default='cuda:3')
                         #default=torch.device("cuda" if
                         # torch.cuda.is_available() else "cpu"))
-    parser.add_argument('--max_epochs', type=int, default=7)
+    parser.add_argument('--max_epochs', type=int, default=20)
     parser.add_argument('--lr', type=float, default=5e-3, help='learning rate')
     parser.add_argument('--node_hidden_size', type=int, default=2,
                         help='hidden dimension for GNN')
