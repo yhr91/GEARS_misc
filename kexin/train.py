@@ -29,7 +29,7 @@ def train(model, train_loader, val_loader, graph, weights, args, device="cpu", g
     min_val = np.inf
     
     print('Start Training...')
-    
+
     for epoch in range(args["max_epochs"]):
         total_loss = 0
         model.train()
@@ -82,10 +82,12 @@ def train(model, train_loader, val_loader, graph, weights, args, device="cpu", g
                          total_loss))
         
         if args['wandb']:
-            wandb.log({'train_mse': train_metrics['mse'],
-                     'train_r2': train_metrics['r2'],
-                     'val_mse': val_metrics['mse'],
-                     'val_r2': val_metrics['r2']})
+            metrics = ['mse', 'mae', 'spearman', 'pearson', 'r2']
+            for m in metrics:
+                wandb.log({'train_' + m: train_metrics[m],
+                           'val_'+m: val_metrics[m],
+                           'train_de_' + m: train_metrics[m + '_de'],
+                           'val_de_'+m: val_metrics[m + '_de']})
         
         
         # Print epoch performance for DE genes
@@ -93,13 +95,7 @@ def train(model, train_loader, val_loader, graph, weights, args, device="cpu", g
               "DE_Validation: {:.4f}. R2 {:.4f} "
         print(log.format(train_metrics['mse_de'], train_metrics['r2_de'],
                          val_metrics['mse_de'], val_metrics['r2_de']))
-
-        if args['wandb']:
-            wandb.log({'train_de_mse': train_metrics['mse_de'],
-                     'train_de_r2': train_metrics['r2_de'],
-                     'val_de_mse': val_metrics['mse_de'],
-                     'val_de_r2': val_metrics['r2_de']})
-            
+    
             
         # Select best model
         if val_metrics['mse'] < min_val:
@@ -116,13 +112,19 @@ def trainer(args):
     print('----------------------------')
         
     ## exp name setup
-    exp_name = args['model_backend'] + '_' + args['network_name'] + '_' + str(args['node_hidden_size']) + '_' + str(args['gnn_num_layers']) + '_' + args['loss_mode'] + '_' + args['dataset']
+    exp_name = args['model']  + '_' + args['model_backend'] + '_' + args['network_name'] + '_' + str(args['top_edge_percent']) + '_' + str(args['node_hidden_size']) + '_' + str(args['gnn_num_layers']) + '_' + args['loss_mode'] + '_' + args['dataset']
     
     if args['loss_mode'] == 'l3':
         exp_name += '_gamma' + str(args['focal_gamma'])
 
     if args['shared_weights']:
         exp_name += '_shared'
+    
+    if args['ctrl_remove_train']:
+        exp_name += '_no_ctrl'
+    
+    if args['gene_emb']:
+        exp_name += '_gene_emb'
     
     args['model_name'] = exp_name
     
@@ -187,7 +189,7 @@ def trainer(args):
                            args['ae_hidden_size'],
                            args['loss_type'])
     elif args['model'] == 'GNN_Disentangle':
-        model = GNN_Disentangle(args['num_node_features'],
+        model = GNN_Disentangle(args, args['num_node_features'],
                            args['num_genes'],
                            args['node_hidden_size'],
                            args['node_embed_size'],
@@ -201,7 +203,7 @@ def trainer(args):
                            num_layers = args['gnn_num_layers'])
 
     elif args['model'] == 'GNN_Disentangle_AE':
-        model = GNN_Disentangle(args['num_node_features'],
+        model = GNN_Disentangle(args, args['num_node_features'],
                            args['num_genes'],
                            args['node_hidden_size'],
                            args['node_embed_size'],
@@ -239,8 +241,11 @@ def trainer(args):
     print(log.format(test_metrics['mse_de'], test_metrics['r2_de']))
 
     if args['wandb']:
-        wandb.log({'Test_DE_MSE': test_metrics['mse_de'],
-                  'Test_R2': test_metrics['r2_de']})
+        metrics = ['mse', 'mae', 'spearman', 'pearson', 'r2']
+        for m in metrics:
+            wandb.log({'test_' + m: test_metrics[m],
+                       'test_de_'+m: test_metrics[m + '_de']})
+                
     print('Saving model....')
         
     # Save model outputs and best model
@@ -259,9 +264,11 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description='Perturbation response')
     
     parser.add_argument('--dataset', type=str, choices = ['Norman2019'], default="Norman2019")
-    parser.add_argument('--split', type=str, choices = ['combo_seen0', 'combo_seen1', 'combo_seen2', 'single', 'single_only'], default="combo_seen0")
+    parser.add_argument('--split', type=str, choices = ['simulation', 'combo_seen0', 'combo_seen1', 'combo_seen2', 'single', 'single_only'], default="combo_seen0")
     parser.add_argument('--seed', type=int, default=1)    
     parser.add_argument('--test_set_fraction', type=float, default=0.1)
+    parser.add_argument('--train_gene_set_size', type=float, default=0.75)
+    parser.add_argument('--combo_seen2_train_frac', type=float, default=0.75)
     
     parser.add_argument('--perturbation_key', type=str, default="condition")
     parser.add_argument('--species', type=str, default="human")
@@ -271,7 +278,6 @@ def parse_arguments():
     parser.add_argument('--edge_weights', action='store_true', default=False,
                         help='whether to include linear edge weights during '
                              'GNN training')
-    
     # Dataloader related
     parser.add_argument('--pert_feats', default=True, action='store_false',
                         help='Separate feature to indicate perturbation')
@@ -314,7 +320,11 @@ def parse_arguments():
                         type = str, default = 'GAT', help='model name')    
     parser.add_argument('--shared_weights', default=False, action='store_true',
                     help='Separate feature to indicate perturbation')                    
-                        
+    parser.add_argument('--gene_specific', default=False, action='store_true',
+                    help='Separate feature to indicate perturbation')                    
+    parser.add_argument('--gene_emb', default=False, action='store_true',
+                help='Separate feature to indicate perturbation')   
+    
     # loss
     parser.add_argument('--pert_loss_wt', type=int, default=1,
                         help='weights for perturbed cells compared to control cells')

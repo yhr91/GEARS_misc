@@ -143,7 +143,7 @@ class GNN_Disentangle(torch.nn.Module):
     GNN_Disentangle
     """
 
-    def __init__(self, num_feats, num_genes, hidden_size, node_embed_size,
+    def __init__(self, args, num_feats, num_genes, hidden_size, node_embed_size,
                  incl_edge_weight, ae_num_layers, ae_hidden_size,
                  single_gene_out=False, loss_type='micro', ae_decoder = False, 
                  shared_weights = False, num_layers = 2, model_backend = 'GAT'):
@@ -153,6 +153,9 @@ class GNN_Disentangle(torch.nn.Module):
         self.shared_weights = shared_weights
         self.num_layers = num_layers
         self.model_backend = model_backend
+        self.gene_specific = args['gene_specific']
+        self.gene_emb = args['gene_emb']
+        self.args = args
         
         if self.shared_weights:
             if self.model_backend == 'GAT':
@@ -187,7 +190,15 @@ class GNN_Disentangle(torch.nn.Module):
         
         self.pert_w = nn.Linear(1, hidden_size)
         self.gene_basal_w = nn.Linear(1, hidden_size)
-        self.recovery_w = nn.Linear(hidden_size, 1)
+        
+        if self.gene_emb:
+            self.emb = nn.Embedding(self.num_genes, hidden_size, max_norm=True)
+            self.emb_trans = nn.Linear(hidden_size * 2, hidden_size)
+            
+        if self.gene_specific:
+            pass
+        else:
+            self.recovery_w = nn.Linear(hidden_size, 1)
         
         self.loss_type = loss_type
         self.ae_decoder = ae_decoder
@@ -221,6 +232,11 @@ class GNN_Disentangle(torch.nn.Module):
         pert_emb = self.pert_w(pert)
         base_emb = self.gene_basal_w(gene_base)
         
+        if self.gene_emb:
+            emb = self.emb(torch.LongTensor(list(range(self.num_genes))).repeat(num_graphs, ).to(self.args['device']))
+            base_emb = torch.cat((emb, base_emb), axis = 1)
+            base_emb = self.emb_trans(base_emb)
+            
         pert_base_emb = pert_emb+base_emb
         
         if self.model_backend == 'DeepGCN':
@@ -343,7 +359,7 @@ class AE(torch.nn.Module):
             [ae_hidden_size] + [ae_hidden_size] * ae_num_layers + [num_genes],
             last_layer_act='linear')
 
-    def forward(self, data):
+    def forward(self, data, g, w):
         
         x = data.x
         x = x[:, 0].reshape(*data.y.shape)

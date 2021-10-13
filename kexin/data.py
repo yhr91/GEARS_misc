@@ -13,6 +13,7 @@ from tqdm import tqdm
 import sys
 sys.path.append('/dfs/user/yhr/cell_reprogram/model/')
 
+from utils import parse_single_pert, parse_combo_pert, parse_any_pert
 
 class Network():
     """
@@ -121,25 +122,45 @@ class PertDataloader():
         if os.path.exists(split_path):
             print("Local copy of split is detected. Loading...")
             set2conditions = pickle.load(open(split_path, "rb"))
+            if self.args['split'] == 'simulation':
+                subgroup_path = split_path[:-4] + '_subgroup.pkl'
+                subgroup = pickle.load(open(subgroup_path, "rb"))
+                self.subgroup = subgroup
         else:
             print("Creating new splits....")
-            if self.args['split'][:5] == 'combo':
+            if self.args['split'] == 'simulation':
+                DS = DataSplitter(self.adata, split_type='simulation')
+                
+                adata, subgroup = DS.split_data(train_gene_set_size = self.args['train_gene_set_size'], 
+                                                combo_seen2_train_frac = self.args['combo_seen2_train_frac'],
+                                                seed=self.args['seed'])
+                subgroup_path = split_path[:-4] + '_subgroup.pkl'
+                pickle.dump(subgroup, open(subgroup_path, "wb"))
+                self.subgroup = subgroup
+                
+                
+            elif self.args['split'][:5] == 'combo':
                 split_type = 'combo'
                 seen = int(self.args['split'][-1])
                 DS = DataSplitter(self.adata, split_type=split_type,
                                   seen=int(seen))
+                adata = DS.split_data(test_size=self.args['test_set_fraction'], split_name='split',
+                                       seed=self.args['seed'])
             else:
                 DS = DataSplitter(self.adata, split_type=self.args['split'])
             
-            adata = DS.split_data(test_size=self.args['test_set_fraction'], split_name='split',
+                adata = DS.split_data(test_size=self.args['test_set_fraction'], split_name='split',
                                        seed=self.args['seed'])
             
             set2conditions = dict(adata.obs.groupby('split').agg({'condition': lambda x: x}).condition)
             set2conditions = {i: j.unique().tolist() for i,j in set2conditions.items()} 
             pickle.dump(set2conditions, open(split_path, "wb"))
             print("Saving new splits at " + split_path) 
-            self.args['dataset'] + '_' + self.args['split'] + '_' + str(self.args['seed']) + '_' + str(self.args['test_set_fraction'])
         
+        if self.args['split'] == 'simulation':
+            print('Simulation split test composition:')
+            for i,j in subgroup['test_subgroup'].items():
+                print(i + ':' + str(len(j)))
         
         # Create cell graphs
         cell_graphs = {}
@@ -147,7 +168,8 @@ class PertDataloader():
             if (i == 'train' and self.args['ctrl_remove_train']) or (i == 'val'):
                 # remove control set from training given the args
                 # remove control set from validation in default
-                set2conditions[i].remove('ctrl')           
+                if 'ctrl' in set2conditions[i]:
+                    set2conditions[i].remove('ctrl')           
             cell_graphs[i] = []
             for p in set2conditions[i]:
                 cell_graphs[i].extend(dataset_processed[p])
@@ -365,7 +387,8 @@ class DataSplitter():
         self.seen = seen
 
     def split_data(self, test_size=0.1, test_pert_genes=None,
-                   test_perts=None, split_name='split', seed=None):
+                   test_perts=None, split_name='split', seed=None, val_size = 0.1,
+                   train_gene_set_size = 0.75, combo_seen2_train_frac = 0.75):
         """
         Split dataset and adds split as a column to the dataframe
         Note: split categories are train, val, test
@@ -373,11 +396,26 @@ class DataSplitter():
         np.random.seed(seed=seed)
         unique_perts = [p for p in self.adata.obs['condition'].unique() if
                         p != 'ctrl']
-        train, test = self.get_split_list(unique_perts,
+        
+        if self.split_type == 'simulation':
+            train, test, test_subgroup = self.get_simulation_split(unique_perts,
+                                                                  train_gene_set_size,
+                                                                  combo_seen2_train_frac, 
+                                                                  seed)
+            train, val, val_subgroup = self.get_simulation_split(train,
+                                                                  0.9,
+                                                                  0.9,
+                                                                  seed)
+            ## adding back ctrl to train...
+            train.append('ctrl')
+            
+        else:
+            train, test = self.get_split_list(unique_perts,
                                           test_pert_genes=test_pert_genes,
                                           test_perts=test_perts,
                                           test_size=test_size)
-        train, val = self.get_split_list(train, test_size=test_size)
+            
+            train, val = self.get_split_list(train, test_size=val_size)
 
         map_dict = {x: 'train' for x in train}
         map_dict.update({x: 'val' for x in val})
@@ -387,12 +425,64 @@ class DataSplitter():
         self.adata.obs[split_name] = self.adata.obs['condition'].map(map_dict)
 
         # Add some control to the validation set
-        ctrl_idx = self.adata.obs_names[self.adata.obs['condition'] == 'ctrl']
-        val_ctrl = np.random.choice(ctrl_idx, int(len(ctrl_idx) * test_size))
-        self.adata.obs.at[val_ctrl, 'split'] = 'val'
+        #ctrl_idx = self.adata.obs_names[self.adata.obs['condition'] == 'ctrl']
+        #val_ctrl = np.random.choice(ctrl_idx, int(len(ctrl_idx) * test_size))
+        #self.adata.obs.at[val_ctrl, 'split'] = 'val'
+        if self.split_type == 'simulation':
+            return self.adata, {'test_subgroup': test_subgroup, 
+                                'val_subgroup': val_subgroup
+                               }
+        else:
+            return self.adata
+        
+    def get_simulation_split(self, pert_list, train_gene_set_size = 0.85, combo_seen2_train_frac = 0.85, seed = 1):
+        
+        unique_pert_genes = self.get_genes_from_perts(pert_list)
+        
+        pert_train = []
+        pert_test = []
+        np.random.seed(seed=seed)
+        
+        ## pre-specified list of genes
+        train_gene_candidates = np.random.choice(unique_pert_genes,
+                                                int(len(unique_pert_genes) * train_gene_set_size), replace = False)
+        ## ood genes
+        ood_genes = np.setdiff1d(unique_pert_genes, train_gene_candidates)
+        
+        pert_single_train = self.get_perts_from_genes(train_gene_candidates, pert_list,'single')
+        pert_combo = self.get_perts_from_genes(train_gene_candidates, pert_list,'combo')
+        pert_train.extend(pert_single_train)
+        
+        ## the combo set with one of them in OOD
+        combo_seen1 = [x for x in pert_combo if len([t for t in x.split('+') if
+                                     t in train_gene_candidates]) == 1]
+        pert_test.extend(combo_seen1)
+        
+        pert_combo = np.setdiff1d(pert_combo, combo_seen1)
+        ## randomly sample the combo seen 2 as a test set, the rest in training set
+        np.random.seed(seed=seed)
+        pert_combo_train = np.random.choice(pert_combo, int(len(pert_combo) * combo_seen2_train_frac), replace = False)
+       
+        combo_seen2 = np.setdiff1d(pert_combo, pert_combo_train).tolist()
+        pert_test.extend(combo_seen2)
+        pert_train.extend(pert_combo_train)
+        
+        ## unseen single
+        unseen_single = self.get_perts_from_genes(ood_genes, pert_list, 'single')
+        combo_ood = self.get_perts_from_genes(ood_genes, pert_list, 'combo')
+        pert_test.extend(unseen_single)
+        
+        ## here only keeps the seen 0, since seen 1 is tackled above
+        combo_seen0 = [x for x in combo_ood if len([t for t in x.split('+') if
+                                     t in train_gene_candidates]) == 0]
+        pert_test.extend(combo_seen0)
+        assert len(combo_seen1) + len(combo_seen0) + len(unseen_single) + len(pert_train) + len(combo_seen2) == len(pert_list)
 
-        return self.adata
-
+        return pert_train, pert_test, {'combo_seen0': combo_seen0,
+                                       'combo_seen1': combo_seen1,
+                                       'combo_seen2': combo_seen2,
+                                       'unseen_single': unseen_single}
+        
     def get_split_list(self, pert_list, test_size=0.1,
                        test_pert_genes=None, test_perts=None,
                        hold_outs=True):
@@ -461,8 +551,8 @@ class DataSplitter():
             elif self.seen == 2:
                 if test_perts is None:
                     test_perts = np.random.choice(combo_perts,
-                                     int(len(combo_perts) * test_size))
-
+                                     int(len(combo_perts) * test_size))       
+        
         train_perts = [p for p in pert_list if (p not in test_perts)
                                         and (p not in hold_out)]
         return train_perts, test_perts
@@ -472,20 +562,35 @@ class DataSplitter():
         Returns all single/combo/both perturbations that include a gene
         """
 
-        single_perts = [p for p in pert_list if 'ctrl' in p]
+        single_perts = [p for p in pert_list if ('ctrl' in p) and (p != 'ctrl')]
         combo_perts = [p for p in pert_list if 'ctrl' not in p]
-
+        
+        perts = []
+        
+        if type_ == 'single':
+            pert_candidate_list = single_perts
+        elif type_ == 'combo':
+            pert_candidate_list = combo_perts
+        elif type_ == 'both':
+            pert_candidate_list = pert_list
+            
+        for p in pert_candidate_list:
+            for g in genes:
+                if g in parse_any_pert(p):
+                    perts.append(p)
+                    break
+        '''
         perts = []
         for gene in genes:
             if type_ == 'single':
-                perts.extend([p for p in single_perts if gene in p])
+                perts.extend([p for p in single_perts if gene in parse_any_pert(p)])
 
             if type_ == 'combo':
-                perts.extend([p for p in combo_perts if gene in p])
+                perts.extend([p for p in combo_perts if gene in parse_any_pert(p)])
 
             if type_ == 'both':
-                perts.extend([p for p in pert_list if gene in p])
-
+                perts.extend([p for p in pert_list if gene in parse_any_pert(p)])
+        '''
         return perts
 
     def get_genes_from_perts(self, perts):

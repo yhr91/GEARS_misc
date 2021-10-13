@@ -1,6 +1,25 @@
 import torch
 import numpy as np
 
+## helper function
+def parse_single_pert(i):
+    a = i.split('+')[0]
+    b = i.split('+')[1]
+    if a == 'ctrl':
+        pert = b
+    else:
+        pert = a
+    return pert
+
+def parse_combo_pert(i):
+    return i.split('+')[0], i.split('+')[1]
+
+def parse_any_pert(p):
+    if ('ctrl' in p) and (p != 'ctrl'):
+        return [parse_single_pert(p)]
+    elif 'ctrl' not in p:
+        out = parse_combo_pert(p)
+        return [out[0], out[1]]
 
 def weighted_mse_loss(input, target, weight):
     """

@@ -2,7 +2,9 @@ import torch
 import numpy as np
 
 from sklearn.metrics import r2_score
+from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import mean_squared_error as mse
+from sklearn.metrics import mean_absolute_error as mae
 
 def evaluate(loader, graph, weights, model, args, num_de_idx=20, gene_idx=None):
     """
@@ -78,42 +80,64 @@ def compute_metrics(results, gene_idx=None):
     """
     metrics = {}
     metrics_pert = {}
-    metrics['mse'] = []
-    metrics['r2'] = []
-    metrics['mse_de'] = []
-    metrics['r2_de'] = []
+
+    metric2fct = {
+           'mse': mse,
+           'mae': mae,
+           'spearman': spearmanr,
+           'pearson': pearsonr,
+           'r2': r2_score
+    }
+    
+    for m in metric2fct.keys():
+        metrics[m] = []
+        metrics[m + '_de'] = []
 
     for pert in np.unique(results['pert_cat']):
 
         metrics_pert[pert] = {}
         p_idx = np.where(results['pert_cat'] == pert)[0]
         if gene_idx is None:
-            metrics['r2'].append(r2_score(results['pred'][p_idx].mean(0),
-                                          results['truth'][p_idx].mean(0)))
-            metrics['mse'].append(mse(results['pred'][p_idx].mean(0),
-                                      results['truth'][p_idx].mean(0)))
+            
+            for m, fct in metric2fct.items():
+                if m in ['spearman', 'pearson']:
+                    val = fct(results['pred'][p_idx].mean(0), results['truth'][p_idx].mean(0))[0]
+                    if np.isnan(val):
+                        val = 0
+                else:
+                    val = fct(results['pred'][p_idx].mean(0), results['truth'][p_idx].mean(0))
+                    
+                metrics_pert[pert][m] = val
+                metrics[m].append(metrics_pert[pert][m])
+            
         else:
-            metrics['r2'].append(0)
-            metrics['mse'].append((results['pred'][p_idx].mean(0) -
-                                   results['truth'][p_idx].mean(0))**2)
-        metrics_pert[pert]['r2'] = metrics['r2'][-1]
-        metrics_pert[pert]['mse'] = metrics['mse'][-1]
-
+            for m, fct in metric2fct.items():
+                metrics[m].append(0)     
+       
         if pert != 'ctrl' and gene_idx is None:
-            metrics['r2_de'].append(r2_score(results['pred_de'][p_idx].mean(0),
-                                           results['truth_de'][p_idx].mean(0)))
-            metrics['mse_de'].append(mse(results['pred_de'][p_idx].mean(0),
-                                         results['truth_de'][p_idx].mean(0)))
-            metrics_pert[pert]['r2_de'] = metrics['r2_de'][-1]
-            metrics_pert[pert]['mse_de'] = metrics['mse_de'][-1]
-        else:
-            metrics_pert[pert]['r2_de'] = 0
-            metrics_pert[pert]['mse_de'] = 0
+            
+            for m, fct in metric2fct.items():
+                if m in ['spearman', 'pearson']:
+                    val = fct(results['pred_de'][p_idx].mean(0), results['truth_de'][p_idx].mean(0))[0]
+                    if np.isnan(val):
+                        #print(pert)
+                        #print(results['pred_de'][p_idx].mean(0))
+                        #print(results['truth_de'][p_idx].mean(0))
+                        val = 0
+                else:
+                    val = fct(results['pred_de'][p_idx].mean(0), results['truth_de'][p_idx].mean(0))
+                    
+                metrics_pert[pert][m + '_de'] = val
+                metrics[m + '_de'].append(metrics_pert[pert][m + '_de'])
 
-    metrics['mse'] = np.mean(metrics['mse'])
-    metrics['r2'] = np.mean(metrics['r2'])
-    metrics['mse_de'] = np.mean(metrics['mse_de'])
-    metrics['r2_de'] = np.mean(metrics['r2_de'])
+        else:
+            for m, fct in metric2fct.items():
+                metrics_pert[pert][m + '_de'] = 0
+    
+    for m in metric2fct.keys():
+        
+        metrics[m] = np.mean(metrics[m])
+        metrics[m + '_de'] = np.mean(metrics[m + '_de'])
 
     return metrics, metrics_pert
 
