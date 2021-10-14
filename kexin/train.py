@@ -125,13 +125,21 @@ def trainer(args):
     
     if args['gene_emb']:
         exp_name += '_gene_emb'
+        
+    if args['gene_pert_agg'] == 'concat+w':
+        exp_name += '_concat+w'
+    
+    if 'delta_predict' in args:
+        if args['delta_predict']:
+            exp_name += '_delta_predict'
     
     args['model_name'] = exp_name
     
     if args['wandb']:
-        import wandb        
-        wandb.init(project=args['project_name'] + '_' + args['split'], entity=args['entity_name'], name=exp_name)
-        wandb.config.update(args)
+        import wandb 
+        if not args['wandb_sweep']:
+            wandb.init(project=args['project_name'] + '_' + args['split'], entity=args['entity_name'], name=exp_name)
+            wandb.config.update(args)
         
     if args['network_name'] == 'string':
         args['network_path'] = '/dfs/project/perturb-gnn/graphs/STRING_full_9606.csv'
@@ -259,7 +267,7 @@ def trainer(args):
         subgroup_analysis = {}
         for name in subgroup['test_subgroup'].keys():
             subgroup_analysis[name] = {}
-            for m in test_metrics.keys():
+            for m in list(list(test_pert_res.values())[0].keys()):
                 subgroup_analysis[name][m] = []
 
         for name, pert_list in subgroup['test_subgroup'].items():
@@ -354,6 +362,8 @@ def parse_arguments():
                     help='Separate feature to indicate perturbation')                    
     parser.add_argument('--gene_emb', default=False, action='store_true',
                 help='Separate feature to indicate perturbation')   
+    parser.add_argument('--gene_pert_agg', default='sum', choices = ['sum', 'concat+w'], type = str)
+    parser.add_argument('--delta_predict', default=False, action='store_true')   
     
     # loss
     parser.add_argument('--pert_loss_wt', type=int, default=1,
@@ -368,6 +378,8 @@ def parse_arguments():
     # wandb related
     parser.add_argument('--wandb', default=False, action='store_true',
                     help='Use wandb or not')
+    parser.add_argument('--wandb_sweep', default=False, action='store_true',
+                help='Use wandb or not')
     parser.add_argument('--project_name', type=str, default='pert_gnn',
                         help='project name')
     parser.add_argument('--entity_name', type=str, default='kexinhuang',

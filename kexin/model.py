@@ -155,6 +155,11 @@ class GNN_Disentangle(torch.nn.Module):
         self.model_backend = model_backend
         self.gene_specific = args['gene_specific']
         self.gene_emb = args['gene_emb']
+        self.gene_pert_agg = args['gene_pert_agg']
+        if 'delta_predict' in args:
+            self.delta_predict = args['delta_predict']
+        else:
+            self.delta_predict = False
         self.args = args
         
         if self.shared_weights:
@@ -191,9 +196,15 @@ class GNN_Disentangle(torch.nn.Module):
         self.pert_w = nn.Linear(1, hidden_size)
         self.gene_basal_w = nn.Linear(1, hidden_size)
         
+        if self.gene_pert_agg == 'concat+w':
+            self.pert_base_trans_w = nn.Linear(hidden_size * 2, hidden_size)
+        
         if self.gene_emb:
             self.emb = nn.Embedding(self.num_genes, hidden_size, max_norm=True)
-            self.emb_trans = nn.Linear(hidden_size * 2, hidden_size)
+            if self.delta_predict:
+                self.emb_trans = nn.Linear(hidden_size, hidden_size)
+            else:
+                self.emb_trans = nn.Linear(hidden_size * 2, hidden_size)
             
         if self.gene_specific:
             pass
@@ -225,50 +236,66 @@ class GNN_Disentangle(torch.nn.Module):
         if edge_index is None:
             num_graphs = len(data.batch.unique())
             edge_index = graph.repeat(1, num_graphs)
-        
+
         pert = x[:, 1].reshape(-1,1)
-        gene_base = x[:, 0].reshape(-1,1)
-        
         pert_emb = self.pert_w(pert)
-        base_emb = self.gene_basal_w(gene_base)
-        
-        if self.gene_emb:
+
+        if self.delta_predict:
+            if not self.gene_emb:
+                raise ValueError('delta_predict mode has to turn on gene_emb!')
             emb = self.emb(torch.LongTensor(list(range(self.num_genes))).repeat(num_graphs, ).to(self.args['device']))
-            base_emb = torch.cat((emb, base_emb), axis = 1)
-            base_emb = self.emb_trans(base_emb)
+            base_emb = self.emb_trans(emb)
+        else:
+            gene_base = x[:, 0].reshape(-1,1)
+            base_emb = self.gene_basal_w(gene_base)
+        
+            if self.gene_emb:
+                emb = self.emb(torch.LongTensor(list(range(self.num_genes))).repeat(num_graphs, ).to(self.args['device']))
+                base_emb = torch.cat((emb, base_emb), axis = 1)
+                base_emb = self.emb_trans(base_emb)
             
-        pert_base_emb = pert_emb+base_emb
+        if self.gene_pert_agg == 'concat+w':
+            def pert_base_trans(pert_emb, base_emb):
+                return self.pert_base_trans_w(torch.cat((pert_emb, base_emb), axis = 1))
+        elif self.gene_pert_agg == 'sum':
+            def pert_base_trans(pert_emb, base_emb):
+                return pert_emb+base_emb
+        pert_base_emb = pert_base_trans(pert_emb, base_emb)
         
         if self.model_backend == 'DeepGCN':
             if self.shared_weights:
                 pert_emb = self.layer.conv(pert_base_emb, edge_index)
-                pert_base_emb = pert_emb+base_emb
+                pert_base_emb = pert_base_trans(pert_emb, base_emb)
                 for i in range(self.num_layers-1):
                     pert_emb = self.layer(pert_base_emb, edge_index)
-                    pert_base_emb = pert_emb+base_emb
+                    pert_base_emb = pert_base_trans(pert_emb, base_emb)
                 pert_base_emb = self.layer.act(self.layer.norm(pert_base_emb))
             else:
                 pert_emb = self.layers[0].conv(pert_base_emb, edge_index)
-                pert_base_emb = pert_emb+base_emb
+                pert_base_emb = pert_base_trans(pert_emb, base_emb)
                 for layer in self.layers[1:]:
                     pert_emb = layer(pert_base_emb, edge_index)
-                    pert_base_emb = pert_emb+base_emb
+                    pert_base_emb = pert_base_trans(pert_emb, base_emb)
                 pert_base_emb = self.layers[0].act(self.layers[0].norm(pert_base_emb))
         else:
             if self.shared_weights:
                 for i in range(self.num_layers):
                     pert_emb = self.layer(pert_base_emb, edge_index)
                     pert_emb = pert_emb.relu()
-                    pert_base_emb = pert_emb+base_emb
+                    pert_base_emb = pert_base_trans(pert_emb, base_emb)
             else:
                 for layer in self.layers:
                     pert_emb = layer(pert_base_emb, edge_index)
                     pert_emb = pert_emb.relu()
-                    pert_base_emb = pert_emb+base_emb
-                
-        out = self.recovery_w(pert_base_emb)
-        out = torch.split(torch.flatten(out), self.num_genes)
+                    pert_base_emb = pert_base_trans(pert_emb, base_emb)
         
+        if self.delta_predict:
+            out = self.recovery_w(pert_base_emb) + x[:, 0].reshape(-1,1)
+            out = torch.split(torch.flatten(out), self.num_genes)
+        else:
+            out = self.recovery_w(pert_base_emb)
+            out = torch.split(torch.flatten(out), self.num_genes)
+
         if self.ae_decoder:
             out = torch.stack(out)
             encoded = self.encoder(out)

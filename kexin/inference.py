@@ -26,7 +26,6 @@ def evaluate(loader, graph, weights, model, args, num_de_idx=20, gene_idx=None):
         if weights is not None:
             weights = weights.to(args['device'])
             
-        results = {}
         pert_cat.extend(batch.pert)
 
         with torch.no_grad():
