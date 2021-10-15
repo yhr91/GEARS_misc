@@ -155,6 +155,7 @@ class GNN_Disentangle(torch.nn.Module):
         self.model_backend = model_backend
         self.gene_specific = args['gene_specific']
         self.gene_emb = args['gene_emb']
+        self.lambda_emission = args['lambda_emission']
         
         if 'pert_emb' in args:
             self.pert_emb = args['pert_emb']
@@ -162,6 +163,10 @@ class GNN_Disentangle(torch.nn.Module):
             self.pert_emb_agg = args['pert_emb_agg']
             if self.pert_emb_agg == 'occurence':
                 self.gene_occurence = args['gene_occurence']
+                self.inv_node_map = args['inv_node_map']
+                
+            if self.lambda_emission:
+                self.occurence_bit = args['occurence_bit']
                 self.inv_node_map = args['inv_node_map']
         else:
             self.pert_emb = False
@@ -291,13 +296,27 @@ class GNN_Disentangle(torch.nn.Module):
             
             if self.pert_emb_agg == 'learnable':
                 pert_emb_lambda = self.pert_lambda_pred(pert_global_emb[pert_index[1]])
+                
             for i, j in enumerate(pert_index[0]):
+                
                 if self.pert_emb_agg == 'learnable':
-                    base_emb[j] += pert_emb_lambda[i] * pert_global_emb[pert_index[1][i]]
+                    lambda_i = pert_emb_lambda[i] 
                 elif self.pert_emb_agg == 'constant':
-                    base_emb[j] += self.pert_emb_lambda * pert_global_emb[pert_index[1][i]]
+                    lambda_i = self.pert_emb_lambda 
                 elif self.pert_emb_agg == 'occurence':
-                    base_emb[j] += self.gene_occurence[self.inv_node_map[pert_index[1][i].item()]] * pert_global_emb[pert_index[1][i]]
+                    lambda_i = self.gene_occurence[self.inv_node_map[pert_index[1][i].item()]]
+                if self.lambda_emission:    
+                    if self.training:
+                        # during training
+                        emi_p = np.random.binomial(1, 0.75, 1)[0]
+                        if emi_p == 0:
+                            ## emit
+                            lambda_i = 0
+                    else:
+                        # during testing
+                        if self.occurence_bit[self.inv_node_map[pert_index[1][i].item()]] == 0:
+                            lambda_i = 0
+                base_emb[j] += lambda_i * pert_global_emb[pert_index[1][i]]
                     
             base_emb = base_emb.reshape(num_graphs * self.num_genes, -1)
         

@@ -437,7 +437,7 @@ class DataSplitter():
         else:
             return self.adata
         
-    def get_simulation_split(self, pert_list, train_gene_set_size = 0.85, combo_seen2_train_frac = 0.85, seed = 1):
+    def get_simulation_split(self, pert_list, train_gene_set_size = 0.85, combo_seen2_train_frac = 0.85, seed = 1, test_set_perts = None):
         
         unique_pert_genes = self.get_genes_from_perts(pert_list)
         

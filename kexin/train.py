@@ -135,7 +135,8 @@ def trainer(args):
     if args['pert_emb']:
         exp_name += '_pert_emb_'    
         exp_name += args['pert_emb_agg']
-    
+    if args['lambda_emission']:
+        exp_name += '_lambda_emission'
     
     args['model_name'] = exp_name
     
@@ -173,6 +174,20 @@ def trainer(args):
 
     # Pertrubation dataloader
     pertdl = PertDataloader(adata, network.G, network.weights, args)
+    
+    if args['lambda_emission']:
+        set2conditions = pertdl.set2conditions
+        gene2occurence = {}
+        for i in gene_list:
+            gene2occurence[i] = 0
+
+        for i in set2conditions['train']:
+            if i != 'ctrl':
+                for j in parse_any_pert(i):
+                    gene2occurence[j] = 1
+
+        args['occurence_bit'] = gene2occurence
+        args['inv_node_map'] = {j:i for i, j in pertdl.node_map.items()}
     
     if args['pert_emb_agg'] == 'occurence':
         set2conditions = pertdl.set2conditions
@@ -388,6 +403,8 @@ def parse_arguments():
     parser.add_argument('--delta_predict', default=False, action='store_true')   
     parser.add_argument('--pert_emb_lambda', type=float, default=1)
     parser.add_argument('--pert_emb_agg', type=str, default='constant', choices = ['constant', 'learnable', 'occurence'])
+    parser.add_argument('--lambda_emission', default=False, action='store_true')
+    
     # loss
     parser.add_argument('--pert_loss_wt', type=int, default=1,
                         help='weights for perturbed cells compared to control cells')
