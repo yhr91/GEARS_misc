@@ -28,10 +28,10 @@ def weighted_mse_loss(input, target, weight):
     sample_mean = torch.mean((input - target) ** 2, 1)
     return torch.mean(weight * sample_mean)
 
-def loss_fct(pred, y, perts, weight=1, loss_type = 'micro', loss_mode = 'l2', gamma = 1):
+def loss_fct(pred, y, perts, weight=1, loss_type = 'macro', loss_mode = 'l2', gamma = 1):
 
         # Micro average MSE
-        if loss_type == 'micro':
+        if loss_type == 'macro':
             mse_p = torch.nn.MSELoss()
             perts = np.array(perts)
             losses = torch.tensor(0.0, requires_grad=True).to(pred.device)
@@ -47,8 +47,13 @@ def loss_fct(pred, y, perts, weight=1, loss_type = 'micro', loss_mode = 'l2', ga
 
         else:
             # Weigh the loss for perturbations (unweighted by default)
-            weights = np.ones(len(pred))
-            non_ctrl_idx = np.where([('ctrl' != p) for p in perts])[0]
-            weights[non_ctrl_idx] = weight
-            loss = weighted_mse_loss(pred, y, torch.Tensor(weights).to(pred.device))
+            #weights = np.ones(len(pred))
+            #non_ctrl_idx = np.where([('ctrl' != p) for p in perts])[0]
+            #weights[non_ctrl_idx] = weight
+            #loss = weighted_mse_loss(pred, y, torch.Tensor(weights).to(pred.device))
+            if loss_mode == 'l2':
+                loss = torch.sum((pred - y)**2)/pred.shape[0]/pred.shape[1]
+            elif loss_mode == 'l3':
+                loss = torch.sum((pred - y)**(2 + gamma))/pred.shape[0]/pred.shape[1]
+
             return loss      

@@ -156,6 +156,8 @@ class PertDataloader():
             set2conditions = {i: j.unique().tolist() for i,j in set2conditions.items()} 
             pickle.dump(set2conditions, open(split_path, "wb"))
             print("Saving new splits at " + split_path) 
+            
+        self.set2conditions = set2conditions
         
         if self.args['split'] == 'simulation':
             print('Simulation split test composition:')

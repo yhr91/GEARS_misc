@@ -15,7 +15,7 @@ from torch.optim.lr_scheduler import StepLR
 from model import linear_model, simple_GNN, simple_GNN_AE, GNN_Disentangle, AE, No_Perturb
 from data import PertDataloader, Network
 from inference import evaluate, compute_metrics
-from utils import loss_fct
+from utils import loss_fct, parse_any_pert
 
 torch.manual_seed(0)
 
@@ -98,8 +98,8 @@ def train(model, train_loader, val_loader, graph, weights, args, device="cpu", g
     
             
         # Select best model
-        if val_metrics['mse'] < min_val:
-            min_val = val_metrics['mse']
+        if val_metrics['mse_de'] < min_val:
+            min_val = val_metrics['mse_de']
             best_model = deepcopy(model)
 
     return best_model
@@ -129,9 +129,13 @@ def trainer(args):
     if args['gene_pert_agg'] == 'concat+w':
         exp_name += '_concat+w'
     
-    if 'delta_predict' in args:
-        if args['delta_predict']:
-            exp_name += '_delta_predict'
+    if args['delta_predict']:
+        exp_name += '_delta_predict'
+
+    if args['pert_emb']:
+        exp_name += '_pert_emb_'    
+        exp_name += args['pert_emb_agg']
+    
     
     args['model_name'] = exp_name
     
@@ -169,7 +173,23 @@ def trainer(args):
 
     # Pertrubation dataloader
     pertdl = PertDataloader(adata, network.G, network.weights, args)
+    
+    if args['pert_emb_agg'] == 'occurence':
+        set2conditions = pertdl.set2conditions
+        gene2occurence = {}
+        for i in gene_list:
+            gene2occurence[i] = 0
 
+        for i in set2conditions['train']:
+            if i != 'ctrl':
+                for j in parse_any_pert(i):
+                    gene2occurence[j] += 1
+
+        ratio = np.mean(np.sort(np.array(list(gene2occurence.values())))[-10:])
+        gene2occurence = {i: j/ratio + 0.05 for i,j in gene2occurence.items()}
+        args['gene_occurence'] = gene2occurence
+        args['inv_node_map'] = {j:i for i, j in pertdl.node_map.items()}
+        
     # Compute number of features for each node
     item = [item for item in pertdl.loaders['train_loader']][0]
     args['num_node_features'] = item.x.shape[1]
@@ -362,13 +382,16 @@ def parse_arguments():
                     help='Separate feature to indicate perturbation')                    
     parser.add_argument('--gene_emb', default=False, action='store_true',
                 help='Separate feature to indicate perturbation')   
+    parser.add_argument('--pert_emb', default=False, action='store_true',
+                help='Separate feature to indicate perturbation')   
     parser.add_argument('--gene_pert_agg', default='sum', choices = ['sum', 'concat+w'], type = str)
     parser.add_argument('--delta_predict', default=False, action='store_true')   
-    
+    parser.add_argument('--pert_emb_lambda', type=float, default=1)
+    parser.add_argument('--pert_emb_agg', type=str, default='constant', choices = ['constant', 'learnable', 'occurence'])
     # loss
     parser.add_argument('--pert_loss_wt', type=int, default=1,
                         help='weights for perturbed cells compared to control cells')
-    parser.add_argument('--loss_type', type=str, default='micro',
+    parser.add_argument('--loss_type', type=str, default='macro', choices = ['macro', 'micro'],
                         help='micro averaged or not')
     parser.add_argument('--loss_mode', choices = ['l2', 'l3'], type = str, default = 'l2')
     parser.add_argument('--focal_gamma', type=int, default=2)    

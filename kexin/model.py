@@ -155,11 +155,25 @@ class GNN_Disentangle(torch.nn.Module):
         self.model_backend = model_backend
         self.gene_specific = args['gene_specific']
         self.gene_emb = args['gene_emb']
+        
+        if 'pert_emb' in args:
+            self.pert_emb = args['pert_emb']
+            self.pert_emb_lambda = args['pert_emb_lambda']
+            self.pert_emb_agg = args['pert_emb_agg']
+            if self.pert_emb_agg == 'occurence':
+                self.gene_occurence = args['gene_occurence']
+                self.inv_node_map = args['inv_node_map']
+        else:
+            self.pert_emb = False
+            
+        self.pert_emb = args['pert_emb']
         self.gene_pert_agg = args['gene_pert_agg']
+        
         if 'delta_predict' in args:
             self.delta_predict = args['delta_predict']
         else:
             self.delta_predict = False
+        
         self.args = args
         
         if self.shared_weights:
@@ -205,12 +219,18 @@ class GNN_Disentangle(torch.nn.Module):
                 self.emb_trans = nn.Linear(hidden_size, hidden_size)
             else:
                 self.emb_trans = nn.Linear(hidden_size * 2, hidden_size)
+        
+        if self.pert_emb:
+            #self.pert_emb_trans = nn.Linear(hidden_size, hidden_size)
+            self.pert_emb_trans = nn.Embedding(self.num_genes, hidden_size, max_norm=True)
+            if self.pert_emb_agg == 'learnable':
+                self.pert_lambda_pred = MLP([hidden_size, hidden_size, 1], last_layer_act='ReLU')
             
         if self.gene_specific:
             pass
         else:
-            self.recovery_w = nn.Linear(hidden_size, 1)
-        
+            #self.recovery_w = nn.Linear(hidden_size, 1)
+            self.recovery_w = MLP([hidden_size, hidden_size*2, hidden_size, 1], last_layer_act='linear')
         self.loss_type = loss_type
         self.ae_decoder = ae_decoder
         if self.ae_decoder:
@@ -239,7 +259,7 @@ class GNN_Disentangle(torch.nn.Module):
 
         pert = x[:, 1].reshape(-1,1)
         pert_emb = self.pert_w(pert)
-
+        
         if self.delta_predict:
             if not self.gene_emb:
                 raise ValueError('delta_predict mode has to turn on gene_emb!')
@@ -253,7 +273,34 @@ class GNN_Disentangle(torch.nn.Module):
                 emb = self.emb(torch.LongTensor(list(range(self.num_genes))).repeat(num_graphs, ).to(self.args['device']))
                 base_emb = torch.cat((emb, base_emb), axis = 1)
                 base_emb = self.emb_trans(base_emb)
+        '''    
+        if self.pert_emb:
+            pert_index = torch.where(pert.reshape(*data.y.shape) == 1)
+            emb_one_set = self.emb(torch.LongTensor(list(range(self.num_genes))).to(self.args['device']))
+            pert_global_emb = self.pert_emb_trans(emb_one_set)
+            base_emb = base_emb.reshape(num_graphs, self.num_genes, -1)
+            for i, j in enumerate(pert_index[0]):
+                base_emb[j] += self.pert_emb_lambda * pert_global_emb[pert_index[1][i]]
+            base_emb = base_emb.reshape(num_graphs * self.num_genes, -1)
+        '''    
+        
+        if self.pert_emb:
+            pert_index = torch.where(pert.reshape(*data.y.shape) == 1)
+            pert_global_emb = self.pert_emb_trans(torch.LongTensor(list(range(self.num_genes))).to(self.args['device']))
+            base_emb = base_emb.reshape(num_graphs, self.num_genes, -1)
             
+            if self.pert_emb_agg == 'learnable':
+                pert_emb_lambda = self.pert_lambda_pred(pert_global_emb[pert_index[1]])
+            for i, j in enumerate(pert_index[0]):
+                if self.pert_emb_agg == 'learnable':
+                    base_emb[j] += pert_emb_lambda[i] * pert_global_emb[pert_index[1][i]]
+                elif self.pert_emb_agg == 'constant':
+                    base_emb[j] += self.pert_emb_lambda * pert_global_emb[pert_index[1][i]]
+                elif self.pert_emb_agg == 'occurence':
+                    base_emb[j] += self.gene_occurence[self.inv_node_map[pert_index[1][i].item()]] * pert_global_emb[pert_index[1][i]]
+                    
+            base_emb = base_emb.reshape(num_graphs * self.num_genes, -1)
+        
         if self.gene_pert_agg == 'concat+w':
             def pert_base_trans(pert_emb, base_emb):
                 return self.pert_base_trans_w(torch.cat((pert_emb, base_emb), axis = 1))
@@ -288,7 +335,24 @@ class GNN_Disentangle(torch.nn.Module):
                     pert_emb = layer(pert_base_emb, edge_index)
                     pert_emb = pert_emb.relu()
                     pert_base_emb = pert_base_trans(pert_emb, base_emb)
+        '''
+        if self.pert_emb:
+            pert_index = torch.where(pert.reshape(*data.y.shape) == 1)
+            emb_one_set = self.emb(torch.LongTensor(list(range(self.num_genes))).to(self.args['device']))
+            pert_global_emb = self.pert_emb_trans(emb_one_set)
+            pert_base_emb = pert_base_emb.reshape(num_graphs, self.num_genes, -1)
+            for i, j in enumerate(pert_index[0]):
+                pert_base_emb[j] += self.pert_emb_lambda * pert_global_emb[pert_index[1][i]]
+            pert_base_emb = pert_base_emb.reshape(num_graphs * self.num_genes, -1)
         
+        if self.pert_emb:
+            pert_index = torch.where(pert.reshape(*data.y.shape) == 1)
+            pert_global_emb = self.pert_emb_trans(torch.LongTensor(list(range(self.num_genes))).to(self.args['device']))
+            pert_base_emb = pert_base_emb.reshape(num_graphs, self.num_genes, -1)
+            for i, j in enumerate(pert_index[0]):
+                pert_base_emb[j] += self.pert_emb_lambda * pert_global_emb[pert_index[1][i]]
+            pert_base_emb = pert_base_emb.reshape(num_graphs * self.num_genes, -1)
+        '''   
         if self.delta_predict:
             out = self.recovery_w(pert_base_emb) + x[:, 0].reshape(-1,1)
             out = torch.split(torch.flatten(out), self.num_genes)
