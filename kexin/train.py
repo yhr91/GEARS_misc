@@ -13,14 +13,15 @@ import torch.nn as nn
 from torch.optim.lr_scheduler import StepLR
 
 from model import linear_model, simple_GNN, simple_GNN_AE, GNN_Disentangle, AE, No_Perturb
-from data import PertDataloader, Network
-from inference import evaluate, compute_metrics
+from data import PertDataloader, Network, GeneSimNetwork
+from inference import evaluate, compute_metrics, deeper_analysis, GI_subgroup
 from utils import loss_fct, parse_any_pert
 
 torch.manual_seed(0)
 
 
 def train(model, train_loader, val_loader, graph, weights, args, device="cpu", gene_idx=None):
+    best_model = deepcopy(model)
     if args['wandb']:
         import wandb
     optimizer = optim.Adam(model.parameters(), lr=args['lr'], weight_decay=args['weight_decay'])
@@ -138,19 +139,28 @@ def trainer(args):
     if args['lambda_emission']:
         exp_name += '_lambda_emission'
     
+    if args['sim_gnn']:
+        exp_name += '_sim_gnn'
+    
+    if args['test_perts'] != 'N/A':
+        exp_name += '_' + args['test_perts']
+    
     args['model_name'] = exp_name
     
     if args['wandb']:
         import wandb 
         if not args['wandb_sweep']:
-            wandb.init(project=args['project_name'] + '_' + args['split'], entity=args['entity_name'], name=exp_name)
+            if args['exp_name'] != 'N/A':
+                wandb.init(project=args['project_name'] + '_' + args['split'], entity=args['entity_name'], name=args['exp_name'])
+            else:
+                wandb.init(project=args['project_name'] + '_' + args['split'], entity=args['entity_name'], name=exp_name)
             wandb.config.update(args)
         
     if args['network_name'] == 'string':
         args['network_path'] = '/dfs/project/perturb-gnn/graphs/STRING_full_9606.csv'
     
     if args['dataset'] == 'Norman2019':
-        data_path = '/dfs/project/perturb-gnn/datasets/Norman2019_hvg+perts.h5ad'
+        data_path = '/dfs/project/perturb-gnn/datasets/Norman2019_hvg+perts_more_de.h5ad'
     
     s = time()
     adata = sc.read_h5ad(data_path)
@@ -175,6 +185,15 @@ def trainer(args):
     # Pertrubation dataloader
     pertdl = PertDataloader(adata, network.G, network.weights, args)
     
+    if args['sim_gnn']:
+        if args['sim_graph'] == 'knn_go_pathway':
+            fname = '/dfs/user/kexinh/perturb_GNN/kexin/gene_sim_knn.csv'
+        elif args['sim_graph'] == 'go_pathway':
+            fname = '/dfs/user/kexinh/perturb_GNN/kexin/gene_sim_jc_filter.csv'
+        sim_network = GeneSimNetwork(fname, args['gene_list'], node_map = pertdl.node_map)
+        args['G_sim'] = sim_network.edge_index
+        args['G_sim_weight'] = sim_network.edge_weight
+        
     if args['lambda_emission']:
         set2conditions = pertdl.set2conditions
         gene2occurence = {}
@@ -279,24 +298,48 @@ def trainer(args):
                               pertdl.loaders['edge_index'],
                               pertdl.loaders['edge_attr'],
                               args, device=args["device"])
-
+    
+    print('Saving model....')
+        
+    # Save model outputs and best model
+    np.save('./saved_args/'+ args['model_name'], args)
+    torch.save(best_model, './saved_models/' +args['model_name'])
+    
+    
     print('Start testing....')
     test_res = evaluate(pertdl.loaders['test_loader'],
                             pertdl.loaders['edge_index'],
                             pertdl.loaders['edge_attr'],best_model, args)
     
     test_metrics, test_pert_res = compute_metrics(test_res)
+    np.save('./saved_metrics/'+args['model_name'],test_pert_res)
+    
     log = "Final best performing model: Test_DE: {:.4f}, R2 {:.4f} "
     print(log.format(test_metrics['mse_de'], test_metrics['r2_de']))
     if args['wandb']:
         metrics = ['mse', 'mae', 'spearman', 'pearson', 'r2']
         for m in metrics:
             wandb.log({'test_' + m: test_metrics[m],
-                       'test_de_'+m: test_metrics[m + '_de'],
-                       'test_de_macro_'+m: test_metrics[m + '_de_macro'],
-                       'test_macro_'+m: test_metrics[m + '_macro'],                       
+                       'test_de_'+m: test_metrics[m + '_de']
+                       #'test_de_macro_'+m: test_metrics[m + '_de_macro'],
+                       #'test_macro_'+m: test_metrics[m + '_macro'],                       
                       })
-            
+    
+    out = deeper_analysis(adata, test_res)
+    GI_out = GI_subgroup(out)
+    
+    
+    metrics = ['frac_in_range', 'mean_sigma', 'std_sigma', 'frac_sigma_below_1', 'frac_sigma_below_2', 
+          'spearman_delta', 'spearman_delta_de', 'pearson_delta', 'pearson_delta_de', 'fold_change_gap_all', 
+          'spearman_delta_top200_hvg', 'pearson_delta_top200_hvg', 'fold_change_gap_upreg_3', 'fold_change_gap_downreg_0.33',
+          'fold_change_gap_downreg_0.1', 'fold_change_gap_upreg_10', 'spearman_top200_hvg', 'pearson_top200_hvg',
+          'pearson_top200_de', 'spearman_top200_de', 'pearson_delta_top200_de', 'spearman_delta_top200_de',
+          'pearson_top100_de', 'spearman_top100_de', 'pearson_delta_top100_de', 'spearman_delta_top100_de']
+    
+    if args['wandb']:
+        for m in metrics:
+            wandb.log({'test_' + m: np.mean([j[m] for i,j in out.items() if m in j])})
+    
     if args['split'] == 'simulation':
         subgroup = pertdl.subgroup
         subgroup_analysis = {}
@@ -318,13 +361,30 @@ def trainer(args):
 
                 print('test_' + name + '_' + m + ': ' + str(subgroup_analysis[name][m]))
         
-                
-    print('Saving model....')
-        
-    # Save model outputs and best model
-    np.save('./saved_metrics/'+args['model_name'],test_pert_res)
-    np.save('./saved_args/'+ args['model_name'], args)
-    torch.save(best_model, './saved_models/' +args['model_name'])
+        ## deeper analysis
+        subgroup_analysis = {}
+        for name in subgroup['test_subgroup'].keys():
+            subgroup_analysis[name] = {}
+            for m in metrics:
+                subgroup_analysis[name][m] = []
+
+        for name, pert_list in subgroup['test_subgroup'].items():
+            for pert in pert_list:
+                for m, res in out[pert].items():
+                    subgroup_analysis[name][m].append(res)
+
+        for name, result in subgroup_analysis.items():
+            for m in result.keys():
+                subgroup_analysis[name][m] = np.mean(subgroup_analysis[name][m])
+                wandb.log({'test_' + name + '_' + m: subgroup_analysis[name][m]})
+
+                print('test_' + name + '_' + m + ': ' + str(subgroup_analysis[name][m]))
+    
+    for i,j in GI_out.items():
+        for m in ['mean_sigma', 'std_sigma', 'fold_change_gap_all', 'pearson_delta_top200_de', 'spearman_delta_top200_de', 'pearson_delta_top100_de', 'spearman_delta_top100_de']:
+            wandb.log({'test_' + i + '_' + m: j[m]})
+
+    
     print('Done!')
 
 
@@ -342,6 +402,8 @@ def parse_arguments():
     parser.add_argument('--test_set_fraction', type=float, default=0.1)
     parser.add_argument('--train_gene_set_size', type=float, default=0.75)
     parser.add_argument('--combo_seen2_train_frac', type=float, default=0.75)
+    parser.add_argument('--test_perts', type=str, default='N/A')
+    parser.add_argument('--only_test_set_perts', default=False, action='store_true')
     
     parser.add_argument('--perturbation_key', type=str, default="condition")
     parser.add_argument('--species', type=str, default="human")
@@ -404,6 +466,8 @@ def parse_arguments():
     parser.add_argument('--pert_emb_lambda', type=float, default=1)
     parser.add_argument('--pert_emb_agg', type=str, default='constant', choices = ['constant', 'learnable', 'occurence'])
     parser.add_argument('--lambda_emission', default=False, action='store_true')
+    parser.add_argument('--sim_gnn', default=False, action='store_true')
+    parser.add_argument('--sim_graph', default='knn_go_pathway', type = str, choices = ['knn_go_pathway', 'go_pathway'])
     
     # loss
     parser.add_argument('--pert_loss_wt', type=int, default=1,
@@ -424,7 +488,8 @@ def parse_arguments():
                         help='project name')
     parser.add_argument('--entity_name', type=str, default='kexinhuang',
                         help='entity name')
-    
+    parser.add_argument('--exp_name', type=str, default='N/A',
+                        help='entity name')
     return dict(vars(parser.parse_args()))
 
 

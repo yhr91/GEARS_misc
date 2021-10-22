@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import networkx as nx
 
-from torch_geometric.nn import GINConv, GCNConv, GATConv, GraphConv
+from torch_geometric.nn import GINConv, GCNConv, GATConv, GraphConv, SGConv
 from torch_geometric.nn import GENConv, DeepGCNLayer
 
 from torch.nn import Sequential, Linear, ReLU, LayerNorm
@@ -156,6 +156,9 @@ class GNN_Disentangle(torch.nn.Module):
         self.gene_specific = args['gene_specific']
         self.gene_emb = args['gene_emb']
         self.lambda_emission = args['lambda_emission']
+        self.sim_gnn = args['sim_gnn']
+        self.G_sim = args['G_sim'].to(args['device'])
+        self.G_sim_weight = args['G_sim_weight'].to(args['device'])
         
         if 'pert_emb' in args:
             self.pert_emb = args['pert_emb']
@@ -225,6 +228,20 @@ class GNN_Disentangle(torch.nn.Module):
             else:
                 self.emb_trans = nn.Linear(hidden_size * 2, hidden_size)
         
+        if self.sim_gnn:
+            self.sim_layers = torch.nn.ModuleList()
+            for i in range(1, 1 + 1):
+                #if self.model_backend == 'GAT':
+                #    self.sim_layers.append(GATConv(hidden_size, hidden_size))
+                #elif self.model_backend == 'GCN':
+                self.sim_layers.append(SGConv(hidden_size, hidden_size, 1))
+                #self.sim_layers.append(GCNConv(hidden_size, hidden_size))
+            #self.sim_trans = nn.Linear(hidden_size * 2, hidden_size)
+            
+            self.sim_layers_gene = torch.nn.ModuleList()
+            for i in range(1, 1 + 1):
+                self.sim_layers.append(SGConv(hidden_size, hidden_size, 1))
+                
         if self.pert_emb:
             #self.pert_emb_trans = nn.Linear(hidden_size, hidden_size)
             self.pert_emb_trans = nn.Embedding(self.num_genes, hidden_size, max_norm=True)
@@ -276,6 +293,13 @@ class GNN_Disentangle(torch.nn.Module):
         
             if self.gene_emb:
                 emb = self.emb(torch.LongTensor(list(range(self.num_genes))).repeat(num_graphs, ).to(self.args['device']))
+                
+                if self.sim_gnn:
+                    for idx, layer in enumerate(self.sim_layers_gene):
+                        emb = layer(emb, self.G_sim, self.G_sim_weight)
+                        if idx < self.num_layers - 1:
+                            emb = emb.relu()
+                
                 base_emb = torch.cat((emb, base_emb), axis = 1)
                 base_emb = self.emb_trans(base_emb)
         '''    
@@ -292,6 +316,15 @@ class GNN_Disentangle(torch.nn.Module):
         if self.pert_emb:
             pert_index = torch.where(pert.reshape(*data.y.shape) == 1)
             pert_global_emb = self.pert_emb_trans(torch.LongTensor(list(range(self.num_genes))).to(self.args['device']))
+
+            if self.sim_gnn:
+                for idx, layer in enumerate(self.sim_layers):
+                    pert_global_emb = layer(pert_global_emb, self.G_sim, self.G_sim_weight)
+                    if idx < self.num_layers - 1:
+                        pert_global_emb = pert_global_emb.relu()
+                
+                #pert_global_emb = self.sim_trans(torch.cat((pert_global_emb, self.pert_emb_trans(torch.LongTensor(list(range(self.num_genes))).to(self.args['device']))), axis = 1))
+                
             base_emb = base_emb.reshape(num_graphs, self.num_genes, -1)
             
             if self.pert_emb_agg == 'learnable':

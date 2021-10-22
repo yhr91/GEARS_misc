@@ -73,6 +73,22 @@ class Network():
         self.edge_list.sort_values('source')
 
 
+class GeneSimNetwork():
+    def __init__(self, fname, gene_list, node_map):
+        self.edge_list = pd.read_csv(fname)
+        self.G = nx.from_pandas_edgelist(self.edge_list, source='gene1',
+                        target='gene2', edge_attr=['score'],
+                        create_using=nx.DiGraph())    
+        self.gene_list = gene_list
+        for n in self.gene_list:
+            if n not in self.G.nodes():
+                self.G.add_node(n)
+        
+        edge_index_ = [(node_map[e[0]], node_map[e[1]]) for e in
+                      self.G.edges]
+        self.edge_index = torch.tensor(edge_index_, dtype=torch.long).T
+        self.edge_weight = torch.Tensor(self.edge_list['score'].values)
+        
 class PertDataloader():
     """
     DataLoader class for creating perturbation graph objects
@@ -119,6 +135,9 @@ class PertDataloader():
         
         split_path = './splits/' + self.args['dataset'] + '_' + self.args['split'] + '_' + str(self.args['seed']) + '_' + str(self.args['test_set_fraction']) + '.pkl'
         
+        if self.args['test_perts'] != 'N/A':
+            split_path = split_path[:-4] + '_' + self.args['test_perts'] + '.pkl'
+        
         if os.path.exists(split_path):
             print("Local copy of split is detected. Loading...")
             set2conditions = pickle.load(open(split_path, "rb"))
@@ -129,11 +148,19 @@ class PertDataloader():
         else:
             print("Creating new splits....")
             if self.args['split'] == 'simulation':
+                if self.args['test_perts'] != 'N/A':
+                    test_perts = self.args['test_perts'].split('_')
+                else:
+                    test_perts = None
+                    
                 DS = DataSplitter(self.adata, split_type='simulation')
                 
                 adata, subgroup = DS.split_data(train_gene_set_size = self.args['train_gene_set_size'], 
                                                 combo_seen2_train_frac = self.args['combo_seen2_train_frac'],
-                                                seed=self.args['seed'])
+                                                seed=self.args['seed'],
+                                                test_perts = test_perts,
+                                                only_test_set_perts = self.args['only_test_set_perts']
+                                               )
                 subgroup_path = split_path[:-4] + '_subgroup.pkl'
                 pickle.dump(subgroup, open(subgroup_path, "wb"))
                 self.subgroup = subgroup
@@ -390,7 +417,7 @@ class DataSplitter():
 
     def split_data(self, test_size=0.1, test_pert_genes=None,
                    test_perts=None, split_name='split', seed=None, val_size = 0.1,
-                   train_gene_set_size = 0.75, combo_seen2_train_frac = 0.75):
+                   train_gene_set_size = 0.75, combo_seen2_train_frac = 0.75, only_test_set_perts = False):
         """
         Split dataset and adds split as a column to the dataframe
         Note: split categories are train, val, test
@@ -403,7 +430,7 @@ class DataSplitter():
             train, test, test_subgroup = self.get_simulation_split(unique_perts,
                                                                   train_gene_set_size,
                                                                   combo_seen2_train_frac, 
-                                                                  seed)
+                                                                  seed, test_perts, only_test_set_perts)
             train, val, val_subgroup = self.get_simulation_split(train,
                                                                   0.9,
                                                                   0.9,
@@ -437,7 +464,7 @@ class DataSplitter():
         else:
             return self.adata
         
-    def get_simulation_split(self, pert_list, train_gene_set_size = 0.85, combo_seen2_train_frac = 0.85, seed = 1, test_set_perts = None):
+    def get_simulation_split(self, pert_list, train_gene_set_size = 0.85, combo_seen2_train_frac = 0.85, seed = 1, test_set_perts = None, only_test_set_perts = False):
         
         unique_pert_genes = self.get_genes_from_perts(pert_list)
         
@@ -445,11 +472,23 @@ class DataSplitter():
         pert_test = []
         np.random.seed(seed=seed)
         
-        ## pre-specified list of genes
-        train_gene_candidates = np.random.choice(unique_pert_genes,
-                                                int(len(unique_pert_genes) * train_gene_set_size), replace = False)
-        ## ood genes
-        ood_genes = np.setdiff1d(unique_pert_genes, train_gene_candidates)
+        if only_test_set_perts and (test_set_perts is not None):
+            ood_genes = np.array(test_set_perts)
+            train_gene_candidates = np.setdiff1d(unique_pert_genes, ood_genes)
+        else:
+            ## a pre-specified list of genes
+            train_gene_candidates = np.random.choice(unique_pert_genes,
+                                                    int(len(unique_pert_genes) * train_gene_set_size), replace = False)
+
+            if test_set_perts is not None:
+                num_overlap = len(np.intersect1d(train_gene_candidates, test_set_perts))
+                train_gene_candidates = train_gene_candidates[~np.isin(train_gene_candidates, test_set_perts)]
+                ood_genes_exclude_test_set = np.setdiff1d(unique_pert_genes, np.union1d(train_gene_candidates, test_set_perts))
+                train_set_addition = np.random.choice(ood_genes_exclude_test_set, num_overlap, replace = False)
+                train_gene_candidates = np.concatenate((train_gene_candidates, train_set_addition))
+                
+            ## ood genes
+            ood_genes = np.setdiff1d(unique_pert_genes, train_gene_candidates)                
         
         pert_single_train = self.get_perts_from_genes(train_gene_candidates, pert_list,'single')
         pert_combo = self.get_perts_from_genes(train_gene_candidates, pert_list,'combo')
