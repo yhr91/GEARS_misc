@@ -210,7 +210,7 @@ class PertDataloader():
         val_loader = DataLoader(cell_graphs['val'],
                             batch_size=self.args['batch_size'], shuffle=True)
         test_loader = DataLoader(cell_graphs['test'],
-                            batch_size=self.args['batch_size'], shuffle=True)
+                            batch_size=self.args['batch_size'], shuffle=False)
 
         print("Dataloaders created...")
         return {'train_loader': train_loader,

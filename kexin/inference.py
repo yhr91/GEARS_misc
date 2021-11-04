@@ -29,8 +29,10 @@ def evaluate(loader, graph, weights, model, args, num_de_idx=20, gene_idx=None):
         pert_cat.extend(batch.pert)
 
         with torch.no_grad():
-
-            p = model(batch, graph, weights)
+            if args['uncertainty']:
+                p, logvar = model(batch, graph, weights)
+            else:
+                p = model(batch, graph, weights)
             t = batch.y
 
             if gene_idx is not None:
@@ -160,17 +162,18 @@ def compute_metrics(results, gene_idx=None):
 def deeper_analysis(adata, test_res):
     
     metric2fct = {
-           'spearman': spearmanr,
-           'pearson': pearsonr
+           #'spearman': spearmanr, # not meaningful
+           'pearson': pearsonr,
+           'mse': mse
     }
-    
+
     pert_metric = {}
-    
+
     ## in silico modeling and upperbounding
     pert2pert_full_id = dict(adata.obs[['condition', 'cov_drug_dose_name']].values)
     geneid2name = dict(zip(adata.var.index.values, adata.var['gene_name']))
     geneid2idx = dict(zip(adata.var.index.values, range(len(adata.var.index.values))))
-    
+
     # calculate mean expression for each condition
     unique_conditions = adata.obs.condition.unique()
     conditions2index = {}
@@ -185,31 +188,51 @@ def deeper_analysis(adata, test_res):
     ctrl = mean_expression[np.where(pert_list == 'ctrl')[0]]
     most_variable_genes = np.argsort(np.std(mean_expression, axis = 0))[-200:]
     gene_list = adata.var['gene_name'].values
-    
+
     for pert in np.unique(test_res['pert_cat']):
         pert_metric[pert] = {}
         #de_names = [geneid2name[i] for i in adata.uns['rank_genes_groups_cov'][pert2pert_full_id[pert]]]
         de_idx = [geneid2idx[i] for i in adata.uns['rank_genes_groups_cov'][pert2pert_full_id[pert]]]
         de_idx_200 = [geneid2idx[i] for i in adata.uns['rank_genes_groups_cov_top200'][pert2pert_full_id[pert]]]
         de_idx_100 = [geneid2idx[i] for i in adata.uns['rank_genes_groups_cov_top100'][pert2pert_full_id[pert]]]
-        
-        pert_idx = np.where(test_res['pert_cat'] == pert)[0]
+        de_idx_50 = [geneid2idx[i] for i in adata.uns['rank_genes_groups_cov_top50'][pert2pert_full_id[pert]]]
+
+        pert_idx = np.where(test_res['pert_cat'] == pert)[0]    
         pred_mean = np.mean(test_res['pred_de'][pert_idx], axis = 0).reshape(-1,)
         true_mean = np.mean(test_res['truth_de'][pert_idx], axis = 0).reshape(-1,)
-        
+
         mean = np.mean(test_res['truth_de'][pert_idx], axis = 0)
         std = np.std(test_res['truth_de'][pert_idx], axis = 0)
         min_ = np.min(test_res['truth_de'][pert_idx], axis = 0)
         max_ = np.max(test_res['truth_de'][pert_idx], axis = 0)
+        q25 = np.quantile(test_res['truth_de'][pert_idx], 0.25, axis = 0)
+        q75 = np.quantile(test_res['truth_de'][pert_idx], 0.75, axis = 0)
+        q55 = np.quantile(test_res['truth_de'][pert_idx], 0.55, axis = 0)
+        q45 = np.quantile(test_res['truth_de'][pert_idx], 0.45, axis = 0)
+        q40 = np.quantile(test_res['truth_de'][pert_idx], 0.4, axis = 0)
+        q60 = np.quantile(test_res['truth_de'][pert_idx], 0.6, axis = 0)
+
         zero_des = np.intersect1d(np.where(min_ == 0)[0], np.where(max_ == 0)[0])
         nonzero_des = np.setdiff1d(list(range(20)), zero_des)
         if len(nonzero_des) == 0:
             pass
-            # there should be some errors in selecting DEs for this pert
+            # pert that all de genes are 0...
         else:
             in_range = (pred_mean[nonzero_des] >= min_[nonzero_des]) & (pred_mean[nonzero_des] <= max_[nonzero_des])
             frac_in_range = sum(in_range)/len(nonzero_des)
             pert_metric[pert]['frac_in_range'] = frac_in_range
+
+            in_range_5 = (pred_mean[nonzero_des] >= q45[nonzero_des]) & (pred_mean[nonzero_des] <= q55[nonzero_des])
+            frac_in_range_45_55 = sum(in_range_5)/len(nonzero_des)
+            pert_metric[pert]['frac_in_range_45_55'] = frac_in_range_45_55
+
+            in_range_10 = (pred_mean[nonzero_des] >= q40[nonzero_des]) & (pred_mean[nonzero_des] <= q60[nonzero_des])
+            frac_in_range_40_60 = sum(in_range_10)/len(nonzero_des)
+            pert_metric[pert]['frac_in_range_40_60'] = frac_in_range_40_60
+
+            in_range_25 = (pred_mean[nonzero_des] >= q25[nonzero_des]) & (pred_mean[nonzero_des] <= q75[nonzero_des])
+            frac_in_range_25_75 = sum(in_range_25)/len(nonzero_des)
+            pert_metric[pert]['frac_in_range_25_75'] = frac_in_range_25_75
 
             zero_idx = np.where(std > 0)[0]
             sigma = (np.abs(pred_mean[zero_idx] - mean[zero_idx]))/(std[zero_idx])
@@ -222,113 +245,162 @@ def deeper_analysis(adata, test_res):
         p_idx = np.where(test_res['pert_cat'] == pert)[0]
 
         for m, fct in metric2fct.items():
-            val = fct(test_res['pred'][p_idx].mean(0)- ctrl[0], test_res['truth'][p_idx].mean(0)-ctrl[0])[0]
-            if np.isnan(val):
-                val = 0
+            if m != 'mse':
+                val = fct(test_res['pred'][p_idx].mean(0)- ctrl[0], test_res['truth'][p_idx].mean(0)-ctrl[0])[0]
+                if np.isnan(val):
+                    val = 0
 
-            pert_metric[pert][m + '_delta'] = val
-            
-            val = fct(test_res['pred_de'][p_idx].mean(0)- ctrl[0][de_idx], test_res['truth_de'][p_idx].mean(0)-ctrl[0][de_idx])[0]
-            if np.isnan(val):
-                val = 0
+                pert_metric[pert][m + '_delta'] = val
+                
+                val = fct(test_res['pred'][p_idx].mean(0)[de_idx] - ctrl[0][de_idx], test_res['truth'][p_idx].mean(0)[de_idx]-ctrl[0][de_idx])[0]
+                if np.isnan(val):
+                    val = 0
 
-            pert_metric[pert][m + '_delta_de'] = val
-        
+                pert_metric[pert][m + '_delta_de'] = val
+
         ## up fold changes > 10?
         pert_mean = np.mean(test_res['truth'][p_idx], axis = 0).reshape(-1,)
-        
+
         fold_change = pert_mean/ctrl
         fold_change[np.isnan(fold_change)] = 0
         fold_change[np.isinf(fold_change)] = 0
         ## this is to remove the ones that are super low and the fold change becomes unmeaningful
         fold_change[0][np.where(pert_mean < 0.5)[0]] = 0
-        
+
         o =  np.where(fold_change[0] > 0)[0]
-        
+
         pred_fc = test_res['pred'][p_idx].mean(0)[o]
         true_fc = test_res['truth'][p_idx].mean(0)[o]
         ctrl_fc = ctrl[0][o]
-        
+
         if len(o) > 0:
             pert_metric[pert]['fold_change_gap_all'] = np.mean(np.abs(pred_fc/ctrl_fc - true_fc/ctrl_fc))
-        
-        
+
+
         o = np.intersect1d(np.where(fold_change[0] <0.333)[0], np.where(fold_change[0] > 0)[0])
-        
+
         pred_fc = test_res['pred'][p_idx].mean(0)[o]
         true_fc = test_res['truth'][p_idx].mean(0)[o]
         ctrl_fc = ctrl[0][o]
-        
+
         if len(o) > 0:
             pert_metric[pert]['fold_change_gap_downreg_0.33'] = np.mean(np.abs(pred_fc/ctrl_fc - true_fc/ctrl_fc))
-        
-        
+
+
         o = np.intersect1d(np.where(fold_change[0] <0.1)[0], np.where(fold_change[0] > 0)[0])
-        
+
         pred_fc = test_res['pred'][p_idx].mean(0)[o]
         true_fc = test_res['truth'][p_idx].mean(0)[o]
         ctrl_fc = ctrl[0][o]
-        
+
         if len(o) > 0:
             pert_metric[pert]['fold_change_gap_downreg_0.1'] = np.mean(np.abs(pred_fc/ctrl_fc - true_fc/ctrl_fc))
 
         o = np.where(fold_change[0] > 3)[0]
-        
+
         pred_fc = test_res['pred'][p_idx].mean(0)[o]
         true_fc = test_res['truth'][p_idx].mean(0)[o]
         ctrl_fc = ctrl[0][o]
-        
+
         if len(o) > 0:
             pert_metric[pert]['fold_change_gap_upreg_3'] = np.mean(np.abs(pred_fc/ctrl_fc - true_fc/ctrl_fc))
-        
+
         o = np.where(fold_change[0] > 10)[0]
-        
+
         pred_fc = test_res['pred'][p_idx].mean(0)[o]
         true_fc = test_res['truth'][p_idx].mean(0)[o]
         ctrl_fc = ctrl[0][o]
-        
+
         if len(o) > 0:
             pert_metric[pert]['fold_change_gap_upreg_10'] = np.mean(np.abs(pred_fc/ctrl_fc - true_fc/ctrl_fc))
 
         ## most variable genes
         for m, fct in metric2fct.items():
-            val = fct(test_res['pred'][p_idx].mean(0)[most_variable_genes] - ctrl[0][most_variable_genes], test_res['truth'][p_idx].mean(0)[most_variable_genes]-ctrl[0][most_variable_genes])[0]
-            if np.isnan(val):
-                val = 0
-            pert_metric[pert][m + '_delta_top200_hvg'] = val
+            if m != 'mse':
+                val = fct(test_res['pred'][p_idx].mean(0)[most_variable_genes] - ctrl[0][most_variable_genes], test_res['truth'][p_idx].mean(0)[most_variable_genes]-ctrl[0][most_variable_genes])[0]
+                if np.isnan(val):
+                    val = 0
+                pert_metric[pert][m + '_delta_top200_hvg'] = val
 
-            
-            val = fct(test_res['pred'][p_idx].mean(0)[most_variable_genes], test_res['truth'][p_idx].mean(0)[most_variable_genes])[0]
-            if np.isnan(val):
-                val = 0
-            pert_metric[pert][m + '_top200_hvg'] = val
-            
-            
-        ## top 100/200 DEs
+
+                val = fct(test_res['pred'][p_idx].mean(0)[most_variable_genes], test_res['truth'][p_idx].mean(0)[most_variable_genes])[0]
+                if np.isnan(val):
+                    val = 0
+                pert_metric[pert][m + '_top200_hvg'] = val
+            else:
+                val = fct(test_res['pred'][p_idx].mean(0)[most_variable_genes], test_res['truth'][p_idx].mean(0)[most_variable_genes])
+                pert_metric[pert][m + '_top200_hvg'] = val
+
+
+        ## top 20/50/100/200 DEs
         for m, fct in metric2fct.items():
-            val = fct(test_res['pred'][p_idx].mean(0)[de_idx_200] - ctrl[0][de_idx_200], test_res['truth'][p_idx].mean(0)[de_idx_200]-ctrl[0][de_idx_200])[0]
-            if np.isnan(val):
-                val = 0
-            pert_metric[pert][m + '_delta_top200_de'] = val
+            if m != 'mse':
+                val = fct(test_res['pred'][p_idx].mean(0)[de_idx] - ctrl[0][de_idx], test_res['truth'][p_idx].mean(0)[de_idx]-ctrl[0][de_idx])[0]
+                if np.isnan(val):
+                    val = 0
+                pert_metric[pert][m + '_delta_top20_de'] = val
 
-            
-            val = fct(test_res['pred'][p_idx].mean(0)[de_idx_200], test_res['truth'][p_idx].mean(0)[de_idx_200])[0]
-            if np.isnan(val):
-                val = 0
-            pert_metric[pert][m + '_top200_de'] = val
-            
-            
+
+                val = fct(test_res['pred'][p_idx].mean(0)[de_idx], test_res['truth'][p_idx].mean(0)[de_idx])[0]
+                if np.isnan(val):
+                    val = 0
+                pert_metric[pert][m + '_top20_de'] = val
+            else:
+                val = fct(test_res['pred'][p_idx].mean(0)[de_idx] - ctrl[0][de_idx], test_res['truth'][p_idx].mean(0)[de_idx]-ctrl[0][de_idx])
+                pert_metric[pert][m + '_top20_de'] = val
+
+        
         for m, fct in metric2fct.items():
-            val = fct(test_res['pred'][p_idx].mean(0)[de_idx_100] - ctrl[0][de_idx_100], test_res['truth'][p_idx].mean(0)[de_idx_100]-ctrl[0][de_idx_100])[0]
-            if np.isnan(val):
-                val = 0
-            pert_metric[pert][m + '_delta_top100_de'] = val
+            if m != 'mse':
+                val = fct(test_res['pred'][p_idx].mean(0)[de_idx_200] - ctrl[0][de_idx_200], test_res['truth'][p_idx].mean(0)[de_idx_200]-ctrl[0][de_idx_200])[0]
+                if np.isnan(val):
+                    val = 0
+                pert_metric[pert][m + '_delta_top200_de'] = val
 
-            
-            val = fct(test_res['pred'][p_idx].mean(0)[de_idx_100], test_res['truth'][p_idx].mean(0)[de_idx_100])[0]
-            if np.isnan(val):
-                val = 0
-            pert_metric[pert][m + '_top100_de'] = val
+
+                val = fct(test_res['pred'][p_idx].mean(0)[de_idx_200], test_res['truth'][p_idx].mean(0)[de_idx_200])[0]
+                if np.isnan(val):
+                    val = 0
+                pert_metric[pert][m + '_top200_de'] = val
+            else:
+                val = fct(test_res['pred'][p_idx].mean(0)[de_idx_200] - ctrl[0][de_idx_200], test_res['truth'][p_idx].mean(0)[de_idx_200]-ctrl[0][de_idx_200])
+                pert_metric[pert][m + '_top200_de'] = val
+
+        for m, fct in metric2fct.items():
+            if m != 'mse':
+
+                val = fct(test_res['pred'][p_idx].mean(0)[de_idx_100] - ctrl[0][de_idx_100], test_res['truth'][p_idx].mean(0)[de_idx_100]-ctrl[0][de_idx_100])[0]
+                if np.isnan(val):
+                    val = 0
+                pert_metric[pert][m + '_delta_top100_de'] = val
+
+
+                val = fct(test_res['pred'][p_idx].mean(0)[de_idx_100], test_res['truth'][p_idx].mean(0)[de_idx_100])[0]
+                if np.isnan(val):
+                    val = 0
+                pert_metric[pert][m + '_top100_de'] = val
+            else:
+                val = fct(test_res['pred'][p_idx].mean(0)[de_idx_100] - ctrl[0][de_idx_100], test_res['truth'][p_idx].mean(0)[de_idx_100]-ctrl[0][de_idx_100])
+                pert_metric[pert][m + '_top100_de'] = val
+
+        for m, fct in metric2fct.items():
+            if m != 'mse':
+
+                val = fct(test_res['pred'][p_idx].mean(0)[de_idx_50] - ctrl[0][de_idx_50], test_res['truth'][p_idx].mean(0)[de_idx_50]-ctrl[0][de_idx_50])[0]
+                if np.isnan(val):
+                    val = 0
+                pert_metric[pert][m + '_delta_top50_de'] = val
+
+
+                val = fct(test_res['pred'][p_idx].mean(0)[de_idx_50], test_res['truth'][p_idx].mean(0)[de_idx_50])[0]
+                if np.isnan(val):
+                    val = 0
+                pert_metric[pert][m + '_top50_de'] = val
+            else:
+                val = fct(test_res['pred'][p_idx].mean(0)[de_idx_50] - ctrl[0][de_idx_50], test_res['truth'][p_idx].mean(0)[de_idx_50]-ctrl[0][de_idx_50])
+                pert_metric[pert][m + '_top50_de'] = val
+
+
 
     return pert_metric
 

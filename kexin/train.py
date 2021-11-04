@@ -12,10 +12,10 @@ import torch.optim as optim
 import torch.nn as nn
 from torch.optim.lr_scheduler import StepLR
 
-from model import linear_model, simple_GNN, simple_GNN_AE, GNN_Disentangle, AE, No_Perturb
+from model import linear_model, simple_GNN, simple_GNN_AE, GNN_Disentangle, AE, No_Perturb, No_GNN
 from data import PertDataloader, Network, GeneSimNetwork
 from inference import evaluate, compute_metrics, deeper_analysis, GI_subgroup
-from utils import loss_fct, parse_any_pert
+from utils import loss_fct, uncertainty_loss_fct, parse_any_pert
 
 torch.manual_seed(0)
 
@@ -45,14 +45,21 @@ def train(model, train_loader, val_loader, graph, weights, args, device="cpu", g
             
             model.to(device)
             optimizer.zero_grad()
-            pred = model(batch, graph, weights)
             y = batch.y
-
-            # Compute loss
-            loss = loss_fct(pred, y, batch.pert, args['pert_loss_wt'], 
-                              loss_mode = args['loss_mode'], 
-                              gamma = args['focal_gamma'],
-                              loss_type = args['loss_type'])
+            if args['uncertainty']:
+                pred, logvar = model(batch, graph, weights)
+                loss = uncertainty_loss_fct(pred, logvar, y, batch.pert,
+                                  loss_mode = args['loss_mode'], 
+                                  gamma = args['focal_gamma'],
+                                  reg = args['uncertainty_reg'],
+                                  reg_core = args['uncertainty_reg_core'])
+            else:
+                pred = model(batch, graph, weights)
+                # Compute loss
+                loss = loss_fct(pred, y, batch.pert, args['pert_loss_wt'], 
+                                  loss_mode = args['loss_mode'], 
+                                  gamma = args['focal_gamma'],
+                                  loss_type = args['loss_type'])
             loss.backward()
             nn.utils.clip_grad_value_(model.parameters(), clip_value=1.0)
             
@@ -133,9 +140,13 @@ def trainer(args):
     if args['delta_predict']:
         exp_name += '_delta_predict'
 
+    if args['delta_predict_with_gene']:
+        exp_name += '_delta_predict_with_gene'        
+        
     if args['pert_emb']:
         exp_name += '_pert_emb_'    
         exp_name += args['pert_emb_agg']
+
     if args['lambda_emission']:
         exp_name += '_lambda_emission'
     
@@ -144,6 +155,11 @@ def trainer(args):
     
     if args['test_perts'] != 'N/A':
         exp_name += '_' + args['test_perts']
+    
+    if args['uncertainty']:
+        exp_name += '_uncertainty'
+        exp_name += '_' + str(args['uncertainty_reg'])
+        exp_name += '_' + str(args['uncertainty_reg_core'])
     
     args['model_name'] = exp_name
     
@@ -160,7 +176,7 @@ def trainer(args):
         args['network_path'] = '/dfs/project/perturb-gnn/graphs/STRING_full_9606.csv'
     
     if args['dataset'] == 'Norman2019':
-        data_path = '/dfs/project/perturb-gnn/datasets/Norman2019_hvg+perts_more_de.h5ad'
+        data_path = '/dfs/project/perturb-gnn/datasets/Norman2019/Norman2019_hvg+perts_more_de.h5ad'
     
     s = time()
     adata = sc.read_h5ad(data_path)
@@ -263,7 +279,19 @@ def trainer(args):
                            shared_weights = args['shared_weights'],
                            model_backend = args['model_backend'],
                            num_layers = args['gnn_num_layers'])
-
+    elif args['model'] == 'No_GNN':
+        model = No_GNN(args, args['num_node_features'],
+                           args['num_genes'],
+                           args['node_hidden_size'],
+                           args['node_embed_size'],
+                           args['edge_weights'],
+                           args['ae_num_layers'],
+                           args['ae_hidden_size'],
+                           args['loss_type'],
+                           ae_decoder = False,
+                           shared_weights = args['shared_weights'],
+                           model_backend = args['model_backend'],
+                           num_layers = args['gnn_num_layers'])
     elif args['model'] == 'GNN_Disentangle_AE':
         model = GNN_Disentangle(args, args['num_node_features'],
                            args['num_genes'],
@@ -329,12 +357,13 @@ def trainer(args):
     GI_out = GI_subgroup(out)
     
     
-    metrics = ['frac_in_range', 'mean_sigma', 'std_sigma', 'frac_sigma_below_1', 'frac_sigma_below_2', 
-          'spearman_delta', 'spearman_delta_de', 'pearson_delta', 'pearson_delta_de', 'fold_change_gap_all', 
-          'spearman_delta_top200_hvg', 'pearson_delta_top200_hvg', 'fold_change_gap_upreg_3', 'fold_change_gap_downreg_0.33',
-          'fold_change_gap_downreg_0.1', 'fold_change_gap_upreg_10', 'spearman_top200_hvg', 'pearson_top200_hvg',
-          'pearson_top200_de', 'spearman_top200_de', 'pearson_delta_top200_de', 'spearman_delta_top200_de',
-          'pearson_top100_de', 'spearman_top100_de', 'pearson_delta_top100_de', 'spearman_delta_top100_de']
+    metrics = ['frac_in_range', 'frac_in_range_45_55', 'frac_in_range_40_60', 'frac_in_range_25_75', 'mean_sigma', 'std_sigma', 'frac_sigma_below_1', 'frac_sigma_below_2', 'pearson_delta',
+               'pearson_delta_de', 'fold_change_gap_all', 'pearson_delta_top200_hvg', 'fold_change_gap_upreg_3', 
+               'fold_change_gap_downreg_0.33', 'fold_change_gap_downreg_0.1', 'fold_change_gap_upreg_10', 
+               'pearson_top200_hvg', 'pearson_top200_de', 'pearson_top20_de', 'pearson_delta_top200_de', 
+               'pearson_top100_de', 'pearson_delta_top100_de', 'pearson_delta_top50_de', 'pearson_top50_de', 'pearson_delta_top20_de',
+               'mse_top200_hvg', 'mse_top100_de', 'mse_top200_de', 'mse_top50_de', 'mse_top20_de']
+    
     
     if args['wandb']:
         for m in metrics:
@@ -381,10 +410,12 @@ def trainer(args):
                 print('test_' + name + '_' + m + ': ' + str(subgroup_analysis[name][m]))
     
     for i,j in GI_out.items():
-        for m in ['mean_sigma', 'std_sigma', 'fold_change_gap_all', 'pearson_delta_top200_de', 'spearman_delta_top200_de', 'pearson_delta_top100_de', 'spearman_delta_top100_de']:
+        for m in  ['mean_sigma', 'frac_in_range_45_55', 'frac_in_range_40_60', 'frac_in_range_25_75', 
+               'fold_change_gap_all', 'pearson_delta_top200_de', 'pearson_delta_top100_de',  'pearson_delta_top50_de',
+               'mse_top200_de', 'mse_top100_de', 'mse_top50_de', 'mse_top20_de', 'pearson_delta_top20_de']:
             wandb.log({'test_' + i + '_' + m: j[m]})
 
-    
+
     print('Done!')
 
 
@@ -449,7 +480,7 @@ def parse_arguments():
     parser.add_argument('--ae_num_layers', type=int, default=2,
                         help='number of layers in autoencoder')
     
-    parser.add_argument('--model', choices = ['GNN_simple', 'GNN_AE', 'GNN_Disentangle', 'GNN_Disentangle_AE', 'AE', 'No_Perturb'], 
+    parser.add_argument('--model', choices = ['GNN_simple', 'GNN_AE', 'GNN_Disentangle', 'GNN_Disentangle_AE', 'AE', 'No_Perturb', 'No_GNN'], 
                         type = str, default = 'GNN_AE', help='model name')
     parser.add_argument('--model_backend', choices = ['GCN', 'GAT', 'DeepGCN'], 
                         type = str, default = 'GAT', help='model name')    
@@ -463,11 +494,27 @@ def parse_arguments():
                 help='Separate feature to indicate perturbation')   
     parser.add_argument('--gene_pert_agg', default='sum', choices = ['sum', 'concat+w'], type = str)
     parser.add_argument('--delta_predict', default=False, action='store_true')   
+    parser.add_argument('--delta_predict_with_gene', default=False, action='store_true')
     parser.add_argument('--pert_emb_lambda', type=float, default=1)
     parser.add_argument('--pert_emb_agg', type=str, default='constant', choices = ['constant', 'learnable', 'occurence'])
     parser.add_argument('--lambda_emission', default=False, action='store_true')
     parser.add_argument('--sim_gnn', default=False, action='store_true')
     parser.add_argument('--sim_graph', default='knn_go_pathway', type = str, choices = ['knn_go_pathway', 'go_pathway'])
+    parser.add_argument('--gat_num_heads', type=int, default=1)
+    parser.add_argument('--dropout', type=float, default=0.0)
+    parser.add_argument('--batchnorm', default=False, action='store_true')
+    parser.add_argument('--bn_eps', type=float, default=1e-5)
+    parser.add_argument('--bn_mom', type=float, default=0.1)
+    parser.add_argument('--activation', type=str, default = 'relu', choices=['relu', 'parametric-relu'])
+    parser.add_argument('--skipsum', default=False, action='store_true')
+    parser.add_argument('--uncertainty', default=False, action='store_true')
+    parser.add_argument('--uncertainty_reg', type=float, default=0.1)
+    parser.add_argument('--uncertainty_reg_core', type=float, default=1)
+    
+    # ablation analysis
+    
+    parser.add_argument('--no_pert_emb', default=False, action='store_true')
+    parser.add_argument('--no_disentangle', default=False, action='store_true')
     
     # loss
     parser.add_argument('--pert_loss_wt', type=int, default=1,
@@ -476,8 +523,6 @@ def parse_arguments():
                         help='micro averaged or not')
     parser.add_argument('--loss_mode', choices = ['l2', 'l3'], type = str, default = 'l2')
     parser.add_argument('--focal_gamma', type=int, default=2)    
-
-
     
     # wandb related
     parser.add_argument('--wandb', default=False, action='store_true',

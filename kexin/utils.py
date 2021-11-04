@@ -28,6 +28,26 @@ def weighted_mse_loss(input, target, weight):
     sample_mean = torch.mean((input - target) ** 2, 1)
     return torch.mean(weight * sample_mean)
 
+
+def uncertainty_loss_fct(pred, logvar, y, perts, loss_mode = 'l2', gamma = 1, reg = 0.1, reg_core = 1):
+    perts = np.array(perts)
+    losses = torch.tensor(0.0, requires_grad=True).to(pred.device)
+    for p in set(perts):
+        pred_p = pred[np.where(perts==p)[0]]
+        y_p = y[np.where(perts==p)[0]]
+        logvar_p = logvar[np.where(perts==p)[0]]
+        
+        if loss_mode == 'l2':
+            losses += torch.sum(0.5 * torch.exp(-logvar_p) * (pred_p - y_p)**2 + 0.5 * logvar_p)/pred_p.shape[0]/pred_p.shape[1]
+        elif loss_mode == 'l3':
+            #losses += torch.sum(0.5 * torch.exp(-logvar_p) * (pred_p - y_p)**(2 + gamma) + 0.01 * logvar_p)/pred_p.shape[0]/pred_p.shape[1]
+            #losses += torch.sum((pred_p - y_p)**(2 + gamma) + 0.1 * torch.exp(-logvar_p) * (pred_p - y_p)**(2 + gamma) + 0.1 * logvar_p)/pred_p.shape[0]/pred_p.shape[1]
+            losses += reg_core * torch.sum((pred_p - y_p)**(2 + gamma) + reg * torch.exp(-logvar_p) * (pred_p - y_p)**(2 + gamma))/pred_p.shape[0]/pred_p.shape[1]
+       
+            
+    return losses/(len(set(perts)))
+
+
 def loss_fct(pred, y, perts, weight=1, loss_type = 'macro', loss_mode = 'l2', gamma = 1):
 
         # Micro average MSE
