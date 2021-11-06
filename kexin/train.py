@@ -13,7 +13,7 @@ import torch.nn as nn
 from torch.optim.lr_scheduler import StepLR
 
 from model import linear_model, simple_GNN, simple_GNN_AE, GNN_Disentangle, AE, No_Perturb, No_GNN
-from data import PertDataloader, Network, GeneSimNetwork
+from data import PertDataloader, Network, GeneSimNetwork, GeneCoexpressNetwork
 from inference import evaluate, compute_metrics, deeper_analysis, GI_subgroup
 from utils import loss_fct, uncertainty_loss_fct, parse_any_pert
 
@@ -155,7 +155,10 @@ def trainer(args):
     
     if args['test_perts'] != 'N/A':
         exp_name += '_' + args['test_perts']
-    
+
+    if args['randomize_network']:
+        exp_name += '_randomize'
+        
     if args['uncertainty']:
         exp_name += '_uncertainty'
         exp_name += '_' + str(args['uncertainty_reg'])
@@ -167,16 +170,22 @@ def trainer(args):
         import wandb 
         if not args['wandb_sweep']:
             if args['exp_name'] != 'N/A':
-                wandb.init(project=args['project_name'] + '_' + args['split'], entity=args['entity_name'], name=args['exp_name'])
+                wandb.init(project=args['project_name'] + '_' + args['split'] + '_' + args['dataset'], entity=args['entity_name'], name=args['exp_name'])
             else:
-                wandb.init(project=args['project_name'] + '_' + args['split'], entity=args['entity_name'], name=exp_name)
+                wandb.init(project=args['project_name'] + '_' + args['split'] + '_' + args['dataset'], entity=args['entity_name'], name=exp_name)
             wandb.config.update(args)
         
     if args['network_name'] == 'string':
         args['network_path'] = '/dfs/project/perturb-gnn/graphs/STRING_full_9606.csv'
-    
+    elif args['network_name'] == 'co-expression':
+        args['network_path'] = 'co_expression.csv'
+        
     if args['dataset'] == 'Norman2019':
         data_path = '/dfs/project/perturb-gnn/datasets/Norman2019/Norman2019_hvg+perts_more_de.h5ad'
+    elif args['dataset'] == 'Adamson2016':
+        data_path = '/dfs/project/perturb-gnn/datasets/Adamson2016_hvg+perts_more_de.h5ad'
+    elif args['dataset'] == 'Dixit2016':
+        data_path = '/dfs/project/perturb-gnn/datasets/Dixit2016_hvg+perts_more_de.h5ad'
     
     s = time()
     adata = sc.read_h5ad(data_path)
@@ -196,7 +205,7 @@ def trainer(args):
 
     # Set up message passing network
     network = Network(fname=args['network_path'], gene_list=args['gene_list'],
-                      percentile=args['top_edge_percent'])
+                      percentile=args['top_edge_percent'], randomize = args['randomize_network'])
 
     # Pertrubation dataloader
     pertdl = PertDataloader(adata, network.G, network.weights, args)
@@ -209,6 +218,11 @@ def trainer(args):
         sim_network = GeneSimNetwork(fname, args['gene_list'], node_map = pertdl.node_map)
         args['G_sim'] = sim_network.edge_index
         args['G_sim_weight'] = sim_network.edge_weight
+        
+        #fname = 'co_expression.csv'
+        #genexp_network = GeneCoexpressNetwork(fname, args['gene_list'], node_map = pertdl.node_map)
+        #args['G_coexpress'] = genexp_network.edge_index
+        #args['G_coexpress_weight'] = genexp_network.edge_weight
         
     if args['lambda_emission']:
         set2conditions = pertdl.set2conditions
@@ -405,7 +419,8 @@ def trainer(args):
         for name, result in subgroup_analysis.items():
             for m in result.keys():
                 subgroup_analysis[name][m] = np.mean(subgroup_analysis[name][m])
-                wandb.log({'test_' + name + '_' + m: subgroup_analysis[name][m]})
+                if args['wandb']:
+                    wandb.log({'test_' + name + '_' + m: subgroup_analysis[name][m]})
 
                 print('test_' + name + '_' + m + ': ' + str(subgroup_analysis[name][m]))
     
@@ -413,7 +428,8 @@ def trainer(args):
         for m in  ['mean_sigma', 'frac_in_range_45_55', 'frac_in_range_40_60', 'frac_in_range_25_75', 
                'fold_change_gap_all', 'pearson_delta_top200_de', 'pearson_delta_top100_de',  'pearson_delta_top50_de',
                'mse_top200_de', 'mse_top100_de', 'mse_top50_de', 'mse_top20_de', 'pearson_delta_top20_de']:
-            wandb.log({'test_' + i + '_' + m: j[m]})
+            if args['wandb']:
+                wandb.log({'test_' + i + '_' + m: j[m]})
 
 
     print('Done!')
@@ -427,8 +443,8 @@ def parse_arguments():
     # dataset arguments
     parser = argparse.ArgumentParser(description='Perturbation response')
     
-    parser.add_argument('--dataset', type=str, choices = ['Norman2019'], default="Norman2019")
-    parser.add_argument('--split', type=str, choices = ['simulation', 'combo_seen0', 'combo_seen1', 'combo_seen2', 'single', 'single_only'], default="combo_seen0")
+    parser.add_argument('--dataset', type=str, choices = ['Norman2019', 'Adamson2016', 'Dixit2016'], default="Norman2019")
+    parser.add_argument('--split', type=str, choices = ['simulation', 'simulation_single', 'combo_seen0', 'combo_seen1', 'combo_seen2', 'single', 'single_only'], default="combo_seen0")
     parser.add_argument('--seed', type=int, default=1)    
     parser.add_argument('--test_set_fraction', type=float, default=0.1)
     parser.add_argument('--train_gene_set_size', type=float, default=0.75)
@@ -439,7 +455,7 @@ def parse_arguments():
     parser.add_argument('--perturbation_key', type=str, default="condition")
     parser.add_argument('--species', type=str, default="human")
     parser.add_argument('--binary_pert', default=True, action='store_false')
-    parser.add_argument('--edge_attr', default=True, action='store_false')
+    parser.add_argument('--edge_attr', default=False, action='store_true')
     parser.add_argument('--ctrl_remove_train', default=False, action='store_true')
     parser.add_argument('--edge_weights', action='store_true', default=False,
                         help='whether to include linear edge weights during '
@@ -454,15 +470,17 @@ def parse_arguments():
                         help='Filter edges based on applied perturbation')
     
     # network arguments
-    parser.add_argument('--network_name', type=str, default = 'string')
+    parser.add_argument('--network_name', type=str, default = 'string', choices = ['string', 'co-expression'])
     parser.add_argument('--top_edge_percent', type=float, default=10,
                         help='percentile of top edges to retain for graph')
+    parser.add_argument('--randomize_network', default = False, action = 'store_true')
+
     
     # training arguments
     parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--max_epochs', type=int, default=20)
     parser.add_argument('--lr', type=float, default=5e-3, help='learning rate')
-    parser.add_argument('--lr_decay_step_size', type=int, default=3)
+    parser.add_argument('--lr_decay_step_size', type=int, default=1)
     parser.add_argument('--lr_decay_factor', type=float, default=0.5)
     parser.add_argument('--weight_decay', type=float, default=5e-4)
     parser.add_argument('--batch_size', type=int, default=100)
@@ -495,7 +513,7 @@ def parse_arguments():
     parser.add_argument('--gene_pert_agg', default='sum', choices = ['sum', 'concat+w'], type = str)
     parser.add_argument('--delta_predict', default=False, action='store_true')   
     parser.add_argument('--delta_predict_with_gene', default=False, action='store_true')
-    parser.add_argument('--pert_emb_lambda', type=float, default=1)
+    parser.add_argument('--pert_emb_lambda', type=float, default=0.2)
     parser.add_argument('--pert_emb_agg', type=str, default='constant', choices = ['constant', 'learnable', 'occurence'])
     parser.add_argument('--lambda_emission', default=False, action='store_true')
     parser.add_argument('--sim_gnn', default=False, action='store_true')
@@ -508,8 +526,9 @@ def parse_arguments():
     parser.add_argument('--activation', type=str, default = 'relu', choices=['relu', 'parametric-relu'])
     parser.add_argument('--skipsum', default=False, action='store_true')
     parser.add_argument('--uncertainty', default=False, action='store_true')
-    parser.add_argument('--uncertainty_reg', type=float, default=0.1)
+    parser.add_argument('--uncertainty_reg', type=float, default=1)
     parser.add_argument('--uncertainty_reg_core', type=float, default=1)
+    parser.add_argument('--no_gnn', default=False, action='store_true')
     
     # ablation analysis
     

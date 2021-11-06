@@ -158,8 +158,12 @@ class GNN_Disentangle(torch.nn.Module):
         self.gene_emb = args['gene_emb']
         self.lambda_emission = args['lambda_emission']
         self.sim_gnn = args['sim_gnn']
-        self.G_sim = args['G_sim'].to(args['device'])
-        self.G_sim_weight = args['G_sim_weight'].to(args['device'])
+        if self.sim_gnn:
+            self.G_sim = args['G_sim'].to(args['device'])
+            self.G_sim_weight = args['G_sim_weight'].to(args['device'])
+            #self.G_coexpress = args['G_coexpress'].to(args['device'])
+            #self.G_coexpress_weight = args['G_coexpress_weight'].to(args['device'])
+            
         self.uncertainty = args['uncertainty']
         self.args = args
         
@@ -262,7 +266,10 @@ class GNN_Disentangle(torch.nn.Module):
             
         if self.uncertainty:
             self.uncertainty_w = MLP([hidden_size, hidden_size*2, hidden_size, 1], last_layer_act='linear')
-            
+        
+        if self.args['no_gnn']:
+            self.transform = MLP([hidden_size, hidden_size], last_layer_act='ReLU')
+        
         self.loss_type = loss_type
         self.ae_decoder = ae_decoder
         if self.ae_decoder:
@@ -307,7 +314,7 @@ class GNN_Disentangle(torch.nn.Module):
                 
                 #if self.sim_gnn:
                 #    for idx, layer in enumerate(self.sim_layers_gene):
-                #        emb = layer(emb, self.G_sim, self.G_sim_weight)
+                #        emb = layer(emb, self.G_coexpress, self.G_coexpress_weight)
                 #        if idx < self.num_layers - 1:
                 #            emb = emb.relu()
                 
@@ -371,28 +378,33 @@ class GNN_Disentangle(torch.nn.Module):
         if self.args['batchnorm']:
             pert_base_emb = self.bn(pert_base_emb)
         
-        if self.args['no_disentangle']:
-            for layer in self.layers:
-                pert_base_emb = layer(pert_base_emb, edge_index)
-                pert_base_emb = pert_base_emb.relu()
+        
+        if self.args['no_gnn']:
+            pert_base_emb = self.transform(pert_base_emb)
+            
         else:
-            x = pert_base_emb
-            if self.shared_weights:
-                for i in range(self.num_layers):                        
-                    pert_emb = self.layer(pert_base_emb, edge_index)
-                    pert_emb = self.act(pert_emb)
-                    pert_base_emb = pert_base_trans(pert_emb, base_emb)
-                    
+            if self.args['no_disentangle']:
+                for layer in self.layers:
+                    pert_base_emb = layer(pert_base_emb, edge_index)
+                    pert_base_emb = pert_base_emb.relu()
+            else:
+                x = pert_base_emb
+                if self.shared_weights:
+                    for i in range(self.num_layers):                        
+                        pert_emb = self.layer(pert_base_emb, edge_index)
+                        pert_emb = self.act(pert_emb)
+                        pert_base_emb = pert_base_trans(pert_emb, base_emb)
+
+                        if self.args['skipsum']:
+                            pert_base_emb = pert_base_emb + x
+                else:
+                    for layer in self.layers:
+                        pert_emb = layer(pert_base_emb, edge_index)
+                        pert_emb = self.act(pert_emb)
+                        pert_base_emb = pert_base_trans(pert_emb, base_emb)
+
                     if self.args['skipsum']:
                         pert_base_emb = pert_base_emb + x
-            else:
-                for layer in self.layers:
-                    pert_emb = layer(pert_base_emb, edge_index)
-                    pert_emb = self.act(pert_emb)
-                    pert_base_emb = pert_base_trans(pert_emb, base_emb)
-                
-                if self.args['skipsum']:
-                    pert_base_emb = pert_base_emb + x
                         
         if self.delta_predict:
             out = self.recovery_w(pert_base_emb) + x[:, 0].reshape(-1,1)
@@ -497,7 +509,10 @@ class No_GNN(torch.nn.Module):
             self.act = ReLU()
         elif self.args['activation'] == 'parametric-relu':
             self.act = PReLU()
-            
+        
+        
+        self.transform = MLP([hidden_size, hidden_size*2, hidden_size], last_layer_act='linear')
+        
         if self.gene_specific:
             pass
         else:
@@ -609,6 +624,7 @@ class No_GNN(torch.nn.Module):
         else:
             pert_base_emb = pert_base_trans(pert_emb, base_emb)
         
+        pert_base_emb = self.transform(pert_base_emb)
         
         if self.args['batchnorm']:
             pert_base_emb = self.bn(pert_base_emb)
