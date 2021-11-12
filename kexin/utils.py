@@ -21,6 +21,51 @@ def parse_any_pert(p):
         out = parse_combo_pert(p)
         return [out[0], out[1]]
 
+def np_pearson_cor(x, y):
+    xv = x - x.mean(axis=0)
+    yv = y - y.mean(axis=0)
+    xvss = (xv * xv).sum(axis=0)
+    yvss = (yv * yv).sum(axis=0)
+    result = np.matmul(xv.transpose(), yv) / np.sqrt(np.outer(xvss, yvss))
+    # bound the values to -1 to 1 in the event of precision issues
+    return np.maximum(np.minimum(result, 1.0), -1.0)
+
+    
+def get_coexpression_network_from_train(adata, pertdl, args, threshold = 0.4, k = 10):
+    import os
+    import pandas as pd
+    
+    fname = './saved_networks/' + args['dataset'] + '_' + args['split'] + '_' + str(args['seed']) + '_' + str(args['test_set_fraction']) + '_' + str(threshold) + '_' + str(k) + '_co_expression_network.csv'
+    
+    if os.path.exists(fname):
+        return fname
+    else:
+        gene_list = [f for f in adata.var.gene_symbols.values]
+        idx2gene = dict(zip(range(len(gene_list)), gene_list)) 
+        X = adata.X
+        train_perts = pertdl.set2conditions['train']
+        X_tr = X[np.isin(adata.obs.condition, [i for i in train_perts if 'ctrl' in i])]
+        gene_list = adata.var['gene_name'].values
+
+        X_tr = X_tr.toarray()
+        out = np_pearson_cor(X_tr, X_tr)
+        out[np.isnan(out)] = 0
+        out = np.abs(out)
+
+        out_sort_idx = np.argsort(out)[:, -(k + 1):]
+        out_sort_val = np.sort(out)[:, -(k + 1):]
+
+        df_g = []
+        for i in range(out_sort_idx.shape[0]):
+            target = idx2gene[i]
+            for j in range(out_sort_idx.shape[1]):
+                df_g.append((idx2gene[out_sort_idx[i, j]], target, out_sort_val[i, j]))
+
+        df_g = [i for i in df_g if i[2] > threshold]
+        df_co_expression = pd.DataFrame(df_g).rename(columns = {0: 'source', 1: 'target', 2: 'importance'})
+        df_co_expression.to_csv(fname, index = False)
+        return fname
+    
 def weighted_mse_loss(input, target, weight):
     """
     Weighted MSE implementation

@@ -184,7 +184,7 @@ class splitter():
             print("Saving new splits at " + split_path) 
 
         self.set2conditions = set2conditions
-        
+                
         
 class PertDataloader():
     """
@@ -285,6 +285,10 @@ class PertDataloader():
                                   seen=int(seen))
                 adata = DS.split_data(test_size=self.args['test_set_fraction'], split_name='split',
                                        seed=self.args['seed'])
+            
+            elif self.args['split'] == 'no_split':          
+                adata = self.adata
+                adata.obs['split'] = 'test'
             else:
                 DS = DataSplitter(self.adata, split_type=self.args['split'])
             
@@ -305,31 +309,49 @@ class PertDataloader():
         
         # Create cell graphs
         cell_graphs = {}
-        for i in ['train', 'val', 'test']:
-            if (i == 'train' and self.args['ctrl_remove_train']) or (i == 'val'):
-                # remove control set from training given the args
-                # remove control set from validation in default
-                if 'ctrl' in set2conditions[i]:
-                    set2conditions[i].remove('ctrl')           
+        
+        if self.args['split'] == 'no_split':
+            i = 'test'
             cell_graphs[i] = []
             for p in set2conditions[i]:
-                cell_graphs[i].extend(dataset_processed[p])
-        
-        print("Creating dataloaders....")
-        # Set up dataloaders
-        train_loader = DataLoader(cell_graphs['train'],
-                            batch_size=self.args['batch_size'], shuffle=True)
-        val_loader = DataLoader(cell_graphs['val'],
-                            batch_size=self.args['batch_size'], shuffle=True)
-        test_loader = DataLoader(cell_graphs['test'],
-                            batch_size=self.args['batch_size'], shuffle=False)
+                if p != 'ctrl':
+                    cell_graphs[i].extend(dataset_processed[p])
+                
+            print("Creating dataloaders....")
+            # Set up dataloaders
+            test_loader = DataLoader(cell_graphs['test'],
+                                batch_size=self.args['batch_size'], shuffle=False)
 
-        print("Dataloaders created...")
-        return {'train_loader': train_loader,
-                'val_loader': val_loader,
-                'test_loader': test_loader,
-                'edge_index': self.edge_index,
-                'edge_attr': self.edge_attr}
+            print("Dataloaders created...")
+            return {'test_loader': test_loader,
+                    'edge_index': self.edge_index,
+                    'edge_attr': self.edge_attr}
+        else:
+            for i in ['train', 'val', 'test']:
+                if (i == 'train' and self.args['ctrl_remove_train']) or (i == 'val'):
+                    # remove control set from training given the args
+                    # remove control set from validation in default
+                    if 'ctrl' in set2conditions[i]:
+                        set2conditions[i].remove('ctrl')           
+                cell_graphs[i] = []
+                for p in set2conditions[i]:
+                    cell_graphs[i].extend(dataset_processed[p])
+
+            print("Creating dataloaders....")
+            # Set up dataloaders
+            train_loader = DataLoader(cell_graphs['train'],
+                                batch_size=self.args['batch_size'], shuffle=True)
+            val_loader = DataLoader(cell_graphs['val'],
+                                batch_size=self.args['batch_size'], shuffle=True)
+            test_loader = DataLoader(cell_graphs['test'],
+                                batch_size=self.args['batch_size'], shuffle=False)
+
+            print("Dataloaders created...")
+            return {'train_loader': train_loader,
+                    'val_loader': val_loader,
+                    'test_loader': test_loader,
+                    'edge_index': self.edge_index,
+                    'edge_attr': self.edge_attr}
     
     
     def create_dataset_file(self):
@@ -515,8 +537,9 @@ class PertDataloader():
             edge_attr = None
 
         return edge_index, edge_attr
+
     
-    
+
 class DataSplitter():
     """
     Class for handling data splitting. This class is able to generate new

@@ -12,10 +12,10 @@ import torch.optim as optim
 import torch.nn as nn
 from torch.optim.lr_scheduler import StepLR
 
-from model import linear_model, simple_GNN, simple_GNN_AE, GNN_Disentangle, AE, No_Perturb, No_GNN
+from model import linear_model, simple_GNN, simple_GNN_AE, GNN_Disentangle, AE, No_Perturb
 from data import PertDataloader, Network, GeneSimNetwork, GeneCoexpressNetwork
 from inference import evaluate, compute_metrics, deeper_analysis, GI_subgroup
-from utils import loss_fct, uncertainty_loss_fct, parse_any_pert
+from utils import loss_fct, uncertainty_loss_fct, parse_any_pert, get_coexpression_network_from_train
 
 torch.manual_seed(0)
 
@@ -183,9 +183,11 @@ def trainer(args):
     if args['dataset'] == 'Norman2019':
         data_path = '/dfs/project/perturb-gnn/datasets/Norman2019/Norman2019_hvg+perts_more_de.h5ad'
     elif args['dataset'] == 'Adamson2016':
-        data_path = '/dfs/project/perturb-gnn/datasets/Adamson2016_hvg+perts_more_de.h5ad'
+        data_path = '/dfs/project/perturb-gnn/datasets/Adamson2016_hvg+perts_more_de_in_genes.h5ad'
     elif args['dataset'] == 'Dixit2016':
         data_path = '/dfs/project/perturb-gnn/datasets/Dixit2016_hvg+perts_more_de.h5ad'
+    elif args['dataset'] == 'Norman2019_Adamson2016':
+        data_path = '/dfs/project/perturb-gnn/datasets/trans_norman_adamson/norman2019.h5ad'
     
     s = time()
     adata = sc.read_h5ad(data_path)
@@ -211,19 +213,24 @@ def trainer(args):
     pertdl = PertDataloader(adata, network.G, network.weights, args)
     
     if args['sim_gnn']:
-        if args['sim_graph'] == 'knn_go_pathway':
+        if args['dataset'] == 'Norman2019':
             fname = '/dfs/user/kexinh/perturb_GNN/kexin/gene_sim_knn.csv'
-        elif args['sim_graph'] == 'go_pathway':
-            fname = '/dfs/user/kexinh/perturb_GNN/kexin/gene_sim_jc_filter.csv'
+        elif args['dataset'] == 'Adamson2016':
+            fname = '/dfs/user/kexinh/perturb_GNN/kexin/gene_sim_knn_adamson.csv'
+        elif args['dataset'] == 'Norman2019_Adamson2016':
+            fname = '/dfs/user/kexinh/perturb_GNN/kexin/gene_sim_knn_norman_adamson.csv'
+                            
         sim_network = GeneSimNetwork(fname, args['gene_list'], node_map = pertdl.node_map)
         args['G_sim'] = sim_network.edge_index
         args['G_sim_weight'] = sim_network.edge_weight
         
-        #fname = 'co_expression.csv'
-        #genexp_network = GeneCoexpressNetwork(fname, args['gene_list'], node_map = pertdl.node_map)
-        #args['G_coexpress'] = genexp_network.edge_index
-        #args['G_coexpress_weight'] = genexp_network.edge_weight
+    if args['sim_gnn_gene']:    
         
+        fname = get_coexpression_network_from_train(adata, pertdl, args, args['sim_gnn_gene_threshold'], args['sim_gnn_gene_k'])
+        genexp_network = GeneCoexpressNetwork(fname, args['gene_list'], node_map = pertdl.node_map)
+        args['G_coexpress'] = genexp_network.edge_index
+        args['G_coexpress_weight'] = genexp_network.edge_weight
+
     if args['lambda_emission']:
         set2conditions = pertdl.set2conditions
         gene2occurence = {}
@@ -430,6 +437,52 @@ def trainer(args):
                'mse_top200_de', 'mse_top100_de', 'mse_top50_de', 'mse_top20_de', 'pearson_delta_top20_de']:
             if args['wandb']:
                 wandb.log({'test_' + i + '_' + m: j[m]})
+    
+    if '_' in args['dataset']:
+        print('Starting Testing on Cross Dataset....')
+        ## cross dataset evaluation
+        if args['dataset'].split('_')[1] == 'Adamson2016':
+            adata_cross = sc.read_h5ad('/dfs/project/perturb-gnn/datasets/trans_norman_adamson/adamson2016.h5ad')
+            args['dataset'] = 'Norman2019_Adamson2016_Target'
+        
+        args['split'] = 'no_split'
+        
+        if 'gene_symbols' not in adata_cross.var.columns.values:
+            adata_cross.var['gene_symbols'] = adata_cross.var['gene_name']
+        
+        pertdl_cross_dataset = PertDataloader(adata_cross, network.G, network.weights, args)
+        
+        test_res = evaluate(pertdl_cross_dataset.loaders['test_loader'],
+                            pertdl_cross_dataset.loaders['edge_index'],
+                            pertdl_cross_dataset.loaders['edge_attr'], best_model, args)
+    
+        test_metrics, test_pert_res = compute_metrics(test_res)
+
+        log = "Final best performing model: Test_DE on New Dataset: {:.4f}, R2 {:.4f} "
+        print(log.format(test_metrics['mse_de'], test_metrics['r2_de']))
+        if args['wandb']:
+            metrics = ['mse', 'mae', 'spearman', 'pearson', 'r2']
+            for m in metrics:
+                wandb.log({'cross_dataset_test_' + m: test_metrics[m],
+                           'cross_dataset_test_de_'+m: test_metrics[m + '_de']
+                           #'test_de_macro_'+m: test_metrics[m + '_de_macro'],
+                           #'test_macro_'+m: test_metrics[m + '_macro'],                       
+                          })
+
+        out = deeper_analysis(adata_cross, test_res)
+
+        metrics = ['frac_in_range', 'frac_in_range_45_55', 'frac_in_range_40_60', 'frac_in_range_25_75', 'mean_sigma', 'std_sigma', 'frac_sigma_below_1', 'frac_sigma_below_2', 'pearson_delta',
+                   'pearson_delta_de', 'fold_change_gap_all', 'pearson_delta_top200_hvg', 'fold_change_gap_upreg_3', 
+                   'fold_change_gap_downreg_0.33', 'fold_change_gap_downreg_0.1', 'fold_change_gap_upreg_10', 
+                   'pearson_top200_hvg', 'pearson_top200_de', 'pearson_top20_de', 'pearson_delta_top200_de', 
+                   'pearson_top100_de', 'pearson_delta_top100_de', 'pearson_delta_top50_de', 'pearson_top50_de', 'pearson_delta_top20_de',
+                   'mse_top200_hvg', 'mse_top100_de', 'mse_top200_de', 'mse_top50_de', 'mse_top20_de']
+
+
+        if args['wandb']:
+            for m in metrics:
+                wandb.log({'cross_dataset_test_' + m: np.mean([j[m] for i,j in out.items() if m in j])})
+
 
 
     print('Done!')
@@ -443,7 +496,7 @@ def parse_arguments():
     # dataset arguments
     parser = argparse.ArgumentParser(description='Perturbation response')
     
-    parser.add_argument('--dataset', type=str, choices = ['Norman2019', 'Adamson2016', 'Dixit2016'], default="Norman2019")
+    parser.add_argument('--dataset', type=str, choices = ['Norman2019', 'Adamson2016', 'Dixit2016', 'Norman2019_Adamson2016'], default="Norman2019")
     parser.add_argument('--split', type=str, choices = ['simulation', 'simulation_single', 'combo_seen0', 'combo_seen1', 'combo_seen2', 'single', 'single_only'], default="combo_seen0")
     parser.add_argument('--seed', type=int, default=1)    
     parser.add_argument('--test_set_fraction', type=float, default=0.1)
@@ -517,6 +570,9 @@ def parse_arguments():
     parser.add_argument('--pert_emb_agg', type=str, default='constant', choices = ['constant', 'learnable', 'occurence'])
     parser.add_argument('--lambda_emission', default=False, action='store_true')
     parser.add_argument('--sim_gnn', default=False, action='store_true')
+    parser.add_argument('--sim_gnn_gene', default=False, action='store_true')
+    parser.add_argument('--sim_gnn_gene_k', type=int, default=10)    
+    parser.add_argument('--sim_gnn_gene_threshold', type=float, default=0.4)    
     parser.add_argument('--sim_graph', default='knn_go_pathway', type = str, choices = ['knn_go_pathway', 'go_pathway'])
     parser.add_argument('--gat_num_heads', type=int, default=1)
     parser.add_argument('--dropout', type=float, default=0.0)
@@ -529,6 +585,10 @@ def parse_arguments():
     parser.add_argument('--uncertainty_reg', type=float, default=1)
     parser.add_argument('--uncertainty_reg_core', type=float, default=1)
     parser.add_argument('--no_gnn', default=False, action='store_true')
+    parser.add_argument('--mlp_mixer', default=False, action='store_true')
+    parser.add_argument('--mlp_mixer_num_layers', type=int, default=2)
+    parser.add_argument('--mlp_mixer_dropout', type=float, default=0.3)
+    parser.add_argument('--gene_sim_pos_emb', default=False, action='store_true')
     
     # ablation analysis
     
