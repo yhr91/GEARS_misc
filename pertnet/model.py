@@ -61,12 +61,10 @@ class PertNet(torch.nn.Module):
         hidden_size = args['node_hidden_size']
         self.uncertainty = args['uncertainty']
         self.num_layers = args['num_of_gnn_layers']
-        self.args = args
+        self.network_type = args['network_type']
+        self.args = args        
 
-        # perturbation similarity network
-        self.G_sim = args['G_sim'].to(args['device'])
-        self.G_sim_weight = args['G_sim_weight'].to(args['device'])
-
+        self.indv_out_layer = args['indv_out_layer']
         # lambda for aggregation between global perturbation emb + gene embedding
         self.pert_emb_lambda = args['pert_emb_lambda']
         
@@ -85,12 +83,53 @@ class PertNet(torch.nn.Module):
         self.pert_base_trans_w = MLP([hidden_size, hidden_size, hidden_size], last_layer_act='ReLU')
         self.gene_base_trans_w = MLP([hidden_size, hidden_size, hidden_size], last_layer_act='ReLU')
         self.transform = MLP([hidden_size, hidden_size, hidden_size], last_layer_act='ReLU')
-        self.recovery_w = MLP([hidden_size, hidden_size*2, hidden_size, 1], last_layer_act='linear')  
+        
+        if self.indv_out_layer:
+            self.recovery_w = MLP([hidden_size, hidden_size*2, hidden_size], last_layer_act='linear')
+            #self.recovery_w = MLP([hidden_size, hidden_size], last_layer_act='ReLU')
+            self.indv_w1 = nn.Parameter(torch.rand(self.num_genes, hidden_size, 1))
+            self.indv_b1 = nn.Parameter(torch.rand(self.num_genes, 1))
+            #self.act = nn.ReLU()
+            
+            #self.indv_w2 = nn.Parameter(torch.rand(self.num_genes, hidden_size*2, hidden_size))
+            #self.indv_b2 = nn.Parameter(torch.rand(self.num_genes, hidden_size))
+            
+            #self.indv_w_out = nn.Parameter(torch.rand(self.num_genes, hidden_size, 1))
+            #self.indv_b_out = nn.Parameter(torch.rand(self.num_genes, 1))
+            
+            nn.init.xavier_normal_(self.indv_w1)
+            nn.init.xavier_normal_(self.indv_b1)
+            #nn.init.xavier_normal_(self.indv_w2)
+            #nn.init.xavier_normal_(self.indv_b2)
+            #nn.init.xavier_normal_(self.indv_w_out)
+            #nn.init.xavier_normal_(self.indv_b_out)
+        else:
+            self.recovery_w = MLP([hidden_size, hidden_size*2, hidden_size, 1], last_layer_act='linear')  
         
         ### perturbation embedding similarity
-        self.sim_layers = torch.nn.ModuleList()
-        for i in range(1, self.num_layers + 1):
-            self.sim_layers.append(SGConv(hidden_size, hidden_size, 1))
+        if self.network_type == 'all':
+            self.sim_layers_networks = {}
+            self.G_sim = {}
+            self.G_sim_weight = {}
+            
+            for i in ['string_ppi', 'co-expression_train', 'gene_ontology']:
+                self.G_sim[i] = args['G_sim_' + i].to(args['device'])
+                self.G_sim_weight[i] = args['G_sim_weight_' + i].to(args['device'])
+                
+                sim_layers = torch.nn.ModuleList()
+                for l in range(1, self.num_layers + 1):
+                    sim_layers.append(SGConv(hidden_size, hidden_size, 1))
+                self.sim_layers_networks[i] = sim_layers
+            self.sim_layers_networks = nn.ModuleDict(self.sim_layers_networks)
+            
+        else:   
+            # perturbation similarity network
+            self.G_sim = args['G_sim'].to(args['device'])
+            self.G_sim_weight = args['G_sim_weight'].to(args['device'])
+
+            self.sim_layers = torch.nn.ModuleList()
+            for i in range(1, self.num_layers + 1):
+                self.sim_layers.append(SGConv(hidden_size, hidden_size, 1))
 
         # batchnorms
         self.bn_pert_emb = nn.BatchNorm1d(hidden_size)
@@ -123,13 +162,26 @@ class PertNet(torch.nn.Module):
         pert_index = torch.where(pert.reshape(num_graphs, int(x.shape[0]/num_graphs)) == 1)
         pert_global_emb = self.pert_emb(torch.LongTensor(list(range(self.num_genes))).to(self.args['device']))
         #pert_global_emb = self.bn_pert_emb(pert_global_emb)
-
-        ## augment global perturbation embedding with GNN
-        for idx, layer in enumerate(self.sim_layers):
-            pert_global_emb = layer(pert_global_emb, self.G_sim, self.G_sim_weight)
-            if idx < self.num_layers - 1:
-                pert_global_emb = pert_global_emb.relu()
-        #pert_global_emb = self.bn_post_gnn(pert_global_emb)
+        
+        if self.network_type == 'all':
+            pert_global_emb_all = 0
+            for i in ['string_ppi', 'co-expression_train', 'gene_ontology']:
+                sim_layers = self.sim_layers_networks[i]
+                
+                for idx, layer in enumerate(sim_layers):
+                    pert_global_emb = layer(pert_global_emb, self.G_sim[i], self.G_sim_weight[i])
+                    if idx < self.num_layers - 1:
+                        pert_global_emb = pert_global_emb.relu()
+                
+                pert_global_emb_all += pert_global_emb
+            pert_global_emb = pert_global_emb_all               
+        else:
+            ## augment global perturbation embedding with GNN
+            for idx, layer in enumerate(self.sim_layers):
+                pert_global_emb = layer(pert_global_emb, self.G_sim, self.G_sim_weight)
+                if idx < self.num_layers - 1:
+                    pert_global_emb = pert_global_emb.relu()
+            #pert_global_emb = self.bn_post_gnn(pert_global_emb)
 
         ## add global perturbation embedding to each gene in each cell in the batch
         base_emb = base_emb.reshape(num_graphs, self.num_genes, -1)
@@ -157,10 +209,31 @@ class PertNet(torch.nn.Module):
         ## apply the first MLP
         base_emb = self.transform(base_emb)
         #base_emb = self.bn_final(base_emb)
-
-        ## apply the final MLP to predict delta only and then add back the x. 
-        out = self.recovery_w(base_emb) + x[:, 0].reshape(-1,1)
-        out = torch.split(torch.flatten(out), self.num_genes)
+        
+        if self.indv_out_layer:
+            out = self.recovery_w(base_emb)
+            out = out.reshape(num_graphs, self.num_genes, -1)
+            out = out.unsqueeze(-1) * self.indv_w1
+            w = torch.sum(out, axis = 2)
+            out = w + self.indv_b1
+            #out = self.act(out)
+            
+            #out = out.unsqueeze(-1) * self.indv_w2
+            #w = torch.sum(out, axis = 2)
+            #out = w + self.indv_b2
+            #out = self.act(out)
+            
+            #out = out.unsqueeze(-1) * self.indv_w_out
+            #w = torch.sum(out, axis = 2)
+            #out = w + self.indv_b_out
+            
+            out = out.reshape(num_graphs * self.num_genes, -1) + x[:, 0].reshape(-1,1)
+            out = torch.split(torch.flatten(out), self.num_genes)
+            
+        else:
+            ## apply the final MLP to predict delta only and then add back the x. 
+            out = self.recovery_w(base_emb) + x[:, 0].reshape(-1,1)
+            out = torch.split(torch.flatten(out), self.num_genes)
 
         ## uncertainty head
         if self.uncertainty:

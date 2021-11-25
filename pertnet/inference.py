@@ -146,6 +146,243 @@ def compute_metrics(results, gene_idx=None):
 
     return metrics, metrics_pert
 
+
+def non_zero_analysis(adata, test_res):
+    metric2fct = {
+           'pearson': pearsonr,
+           'mse': mse
+    }
+
+    pert_metric = {}
+    
+    ## in silico modeling and upperbounding
+    pert2pert_full_id = dict(adata.obs[['condition', 'cov_drug_dose_name']].values)
+    geneid2name = dict(zip(adata.var.index.values, adata.var['gene_name']))
+    geneid2idx = dict(zip(adata.var.index.values, range(len(adata.var.index.values))))
+
+    # calculate mean expression for each condition
+    unique_conditions = adata.obs.condition.unique()
+    conditions2index = {}
+    for i in unique_conditions:
+        conditions2index[i] = np.where(adata.obs.condition == i)[0]
+
+    condition2mean_expression = {}
+    for i, j in conditions2index.items():
+        condition2mean_expression[i] = np.mean(adata.X[j], axis = 0)
+    pert_list = np.array(list(condition2mean_expression.keys()))
+    mean_expression = np.array(list(condition2mean_expression.values())).reshape(len(adata.obs.condition.unique()), adata.X.toarray().shape[1])
+    ctrl = mean_expression[np.where(pert_list == 'ctrl')[0]]
+    
+    gene_list = adata.var['gene_name'].values
+
+    for pert in np.unique(test_res['pert_cat']):
+        pert_metric[pert] = {}
+        
+        pert_idx = np.where(test_res['pert_cat'] == pert)[0]    
+        de_idx = [geneid2idx[i] for i in adata.uns['top_non_zero_de_20'][pert2pert_full_id[pert]]]
+
+        direc_change = np.abs(np.sign(test_res['pred'][pert_idx].mean(0)[de_idx] - ctrl[0][de_idx]) - np.sign(test_res['truth'][pert_idx].mean(0)[de_idx] - ctrl[0][de_idx]))            
+        frac_correct_direction = len(np.where(direc_change == 0)[0])/len(de_idx)
+        pert_metric[pert]['frac_correct_direction_top20_non_zero'] = frac_correct_direction
+        
+        frac_direction_opposite = len(np.where(direc_change == 2)[0])/len(de_idx)
+        pert_metric[pert]['frac_opposite_direction_top20_non_zero'] = frac_direction_opposite
+        
+        frac_direction_opposite = len(np.where(direc_change == 1)[0])/len(de_idx)
+        pert_metric[pert]['frac_0/1_direction_top20_non_zero'] = frac_direction_opposite
+        
+        mean = np.mean(test_res['truth'][pert_idx][:, de_idx], axis = 0)
+        std = np.std(test_res['truth'][pert_idx][:, de_idx], axis = 0)
+        min_ = np.min(test_res['truth'][pert_idx][:, de_idx], axis = 0)
+        max_ = np.max(test_res['truth'][pert_idx][:, de_idx], axis = 0)
+        q25 = np.quantile(test_res['truth'][pert_idx][:, de_idx], 0.25, axis = 0)
+        q75 = np.quantile(test_res['truth'][pert_idx][:, de_idx], 0.75, axis = 0)
+        q55 = np.quantile(test_res['truth'][pert_idx][:, de_idx], 0.55, axis = 0)
+        q45 = np.quantile(test_res['truth'][pert_idx][:, de_idx], 0.45, axis = 0)
+        q40 = np.quantile(test_res['truth'][pert_idx][:, de_idx], 0.4, axis = 0)
+        q60 = np.quantile(test_res['truth'][pert_idx][:, de_idx], 0.6, axis = 0)
+        
+        zero_des = np.intersect1d(np.where(min_ == 0)[0], np.where(max_ == 0)[0])
+        nonzero_des = np.setdiff1d(list(range(20)), zero_des)
+        
+        if len(nonzero_des) == 0:
+            pass
+            # pert that all de genes are 0...
+        else:            
+            pred_mean = np.mean(test_res['pred'][pert_idx][:, de_idx], axis = 0).reshape(-1,)
+            true_mean = np.mean(test_res['truth'][pert_idx][:, de_idx], axis = 0).reshape(-1,)
+           
+            in_range = (pred_mean[nonzero_des] >= min_[nonzero_des]) & (pred_mean[nonzero_des] <= max_[nonzero_des])
+            frac_in_range = sum(in_range)/len(nonzero_des)
+            pert_metric[pert]['frac_in_range_non_zero'] = frac_in_range
+
+            in_range_5 = (pred_mean[nonzero_des] >= q45[nonzero_des]) & (pred_mean[nonzero_des] <= q55[nonzero_des])
+            frac_in_range_45_55 = sum(in_range_5)/len(nonzero_des)
+            pert_metric[pert]['frac_in_range_45_55_non_zero'] = frac_in_range_45_55
+
+            in_range_10 = (pred_mean[nonzero_des] >= q40[nonzero_des]) & (pred_mean[nonzero_des] <= q60[nonzero_des])
+            frac_in_range_40_60 = sum(in_range_10)/len(nonzero_des)
+            pert_metric[pert]['frac_in_range_40_60_non_zero'] = frac_in_range_40_60
+
+            in_range_25 = (pred_mean[nonzero_des] >= q25[nonzero_des]) & (pred_mean[nonzero_des] <= q75[nonzero_des])
+            frac_in_range_25_75 = sum(in_range_25)/len(nonzero_des)
+            pert_metric[pert]['frac_in_range_25_75_non_zero'] = frac_in_range_25_75
+
+            zero_idx = np.where(std > 0)[0]
+            sigma = (np.abs(pred_mean[zero_idx] - mean[zero_idx]))/(std[zero_idx])
+            pert_metric[pert]['mean_sigma_non_zero'] = np.mean(sigma)
+            pert_metric[pert]['std_sigma_non_zero'] = np.std(sigma)
+            pert_metric[pert]['frac_sigma_below_1_non_zero'] = 1 - len(np.where(sigma > 1)[0])/len(zero_idx)
+            pert_metric[pert]['frac_sigma_below_2_non_zero'] = 1 - len(np.where(sigma > 2)[0])/len(zero_idx)
+        
+        p_idx = np.where(test_res['pert_cat'] == pert)[0]
+        for m, fct in metric2fct.items():
+            if m != 'mse':
+                val = fct(test_res['pred'][p_idx].mean(0)[de_idx] - ctrl[0][de_idx], test_res['truth'][p_idx].mean(0)[de_idx]-ctrl[0][de_idx])[0]
+                if np.isnan(val):
+                    val = 0
+                pert_metric[pert][m + '_delta_top20_de_non_zero'] = val
+
+
+                val = fct(test_res['pred'][p_idx].mean(0)[de_idx], test_res['truth'][p_idx].mean(0)[de_idx])[0]
+                if np.isnan(val):
+                    val = 0
+                pert_metric[pert][m + '_top20_de_non_zero'] = val
+            else:
+                val = fct(test_res['pred'][p_idx].mean(0)[de_idx] - ctrl[0][de_idx], test_res['truth'][p_idx].mean(0)[de_idx]-ctrl[0][de_idx])
+                pert_metric[pert][m + '_top20_de_non_zero'] = val
+                
+    return pert_metric
+
+def non_dropout_analysis(adata, test_res):
+    metric2fct = {
+           'pearson': pearsonr,
+           'mse': mse
+    }
+
+    pert_metric = {}
+    
+    ## in silico modeling and upperbounding
+    pert2pert_full_id = dict(adata.obs[['condition', 'cov_drug_dose_name']].values)
+    geneid2name = dict(zip(adata.var.index.values, adata.var['gene_name']))
+    geneid2idx = dict(zip(adata.var.index.values, range(len(adata.var.index.values))))
+
+    # calculate mean expression for each condition
+    unique_conditions = adata.obs.condition.unique()
+    conditions2index = {}
+    for i in unique_conditions:
+        conditions2index[i] = np.where(adata.obs.condition == i)[0]
+
+    condition2mean_expression = {}
+    for i, j in conditions2index.items():
+        condition2mean_expression[i] = np.mean(adata.X[j], axis = 0)
+    pert_list = np.array(list(condition2mean_expression.keys()))
+    mean_expression = np.array(list(condition2mean_expression.values())).reshape(len(adata.obs.condition.unique()), adata.X.toarray().shape[1])
+    ctrl = mean_expression[np.where(pert_list == 'ctrl')[0]]
+    
+    gene_list = adata.var['gene_name'].values
+
+    for pert in np.unique(test_res['pert_cat']):
+        pert_metric[pert] = {}
+        
+        pert_idx = np.where(test_res['pert_cat'] == pert)[0]    
+        de_idx = [geneid2idx[i] for i in adata.uns['top_non_dropout_de_20'][pert2pert_full_id[pert]]]
+        non_zero_idx = adata.uns['non_zeros_gene_idx'][pert2pert_full_id[pert]]
+        non_dropout_gene_idx = adata.uns['non_dropout_gene_idx'][pert2pert_full_id[pert]]
+             
+        direc_change = np.abs(np.sign(test_res['pred'][pert_idx].mean(0)[de_idx] - ctrl[0][de_idx]) - np.sign(test_res['truth'][pert_idx].mean(0)[de_idx] - ctrl[0][de_idx]))            
+        frac_correct_direction = len(np.where(direc_change == 0)[0])/len(de_idx)
+        pert_metric[pert]['frac_correct_direction_top20_non_dropout'] = frac_correct_direction
+        
+        frac_direction_opposite = len(np.where(direc_change == 2)[0])/len(de_idx)
+        pert_metric[pert]['frac_opposite_direction_top20_non_dropout'] = frac_direction_opposite
+        
+        frac_direction_opposite = len(np.where(direc_change == 1)[0])/len(de_idx)
+        pert_metric[pert]['frac_0/1_direction_top20_non_dropout'] = frac_direction_opposite
+        
+        direc_change = np.abs(np.sign(test_res['pred'][pert_idx].mean(0)[non_zero_idx] - ctrl[0][non_zero_idx]) - np.sign(test_res['truth'][pert_idx].mean(0)[non_zero_idx] - ctrl[0][non_zero_idx]))            
+        frac_correct_direction = len(np.where(direc_change == 0)[0])/len(non_zero_idx)
+        pert_metric[pert]['frac_correct_direction_non_zero'] = frac_correct_direction
+
+        frac_direction_opposite = len(np.where(direc_change == 2)[0])/len(non_zero_idx)
+        pert_metric[pert]['frac_opposite_direction_non_zero'] = frac_direction_opposite
+        
+        frac_direction_opposite = len(np.where(direc_change == 1)[0])/len(non_zero_idx)
+        pert_metric[pert]['frac_0/1_direction_non_zero'] = frac_direction_opposite
+        
+        direc_change = np.abs(np.sign(test_res['pred'][pert_idx].mean(0)[non_dropout_gene_idx] - ctrl[0][non_dropout_gene_idx]) - np.sign(test_res['truth'][pert_idx].mean(0)[non_dropout_gene_idx] - ctrl[0][non_dropout_gene_idx]))            
+        frac_correct_direction = len(np.where(direc_change == 0)[0])/len(non_dropout_gene_idx)
+        pert_metric[pert]['frac_correct_direction_non_dropout'] = frac_correct_direction
+        
+        frac_direction_opposite = len(np.where(direc_change == 2)[0])/len(non_dropout_gene_idx)
+        pert_metric[pert]['frac_opposite_direction_non_dropout'] = frac_direction_opposite
+        
+        frac_direction_opposite = len(np.where(direc_change == 1)[0])/len(non_dropout_gene_idx)
+        pert_metric[pert]['frac_0/1_direction_non_dropout'] = frac_direction_opposite
+        
+        mean = np.mean(test_res['truth'][pert_idx][:, de_idx], axis = 0)
+        std = np.std(test_res['truth'][pert_idx][:, de_idx], axis = 0)
+        min_ = np.min(test_res['truth'][pert_idx][:, de_idx], axis = 0)
+        max_ = np.max(test_res['truth'][pert_idx][:, de_idx], axis = 0)
+        q25 = np.quantile(test_res['truth'][pert_idx][:, de_idx], 0.25, axis = 0)
+        q75 = np.quantile(test_res['truth'][pert_idx][:, de_idx], 0.75, axis = 0)
+        q55 = np.quantile(test_res['truth'][pert_idx][:, de_idx], 0.55, axis = 0)
+        q45 = np.quantile(test_res['truth'][pert_idx][:, de_idx], 0.45, axis = 0)
+        q40 = np.quantile(test_res['truth'][pert_idx][:, de_idx], 0.4, axis = 0)
+        q60 = np.quantile(test_res['truth'][pert_idx][:, de_idx], 0.6, axis = 0)
+        
+        zero_des = np.intersect1d(np.where(min_ == 0)[0], np.where(max_ == 0)[0])
+        nonzero_des = np.setdiff1d(list(range(20)), zero_des)
+        
+        if len(nonzero_des) == 0:
+            pass
+            # pert that all de genes are 0...
+        else:            
+            pred_mean = np.mean(test_res['pred'][pert_idx][:, de_idx], axis = 0).reshape(-1,)
+            true_mean = np.mean(test_res['truth'][pert_idx][:, de_idx], axis = 0).reshape(-1,)
+           
+            in_range = (pred_mean[nonzero_des] >= min_[nonzero_des]) & (pred_mean[nonzero_des] <= max_[nonzero_des])
+            frac_in_range = sum(in_range)/len(nonzero_des)
+            pert_metric[pert]['frac_in_range_non_dropout'] = frac_in_range
+
+            in_range_5 = (pred_mean[nonzero_des] >= q45[nonzero_des]) & (pred_mean[nonzero_des] <= q55[nonzero_des])
+            frac_in_range_45_55 = sum(in_range_5)/len(nonzero_des)
+            pert_metric[pert]['frac_in_range_45_55_non_dropout'] = frac_in_range_45_55
+
+            in_range_10 = (pred_mean[nonzero_des] >= q40[nonzero_des]) & (pred_mean[nonzero_des] <= q60[nonzero_des])
+            frac_in_range_40_60 = sum(in_range_10)/len(nonzero_des)
+            pert_metric[pert]['frac_in_range_40_60_non_dropout'] = frac_in_range_40_60
+
+            in_range_25 = (pred_mean[nonzero_des] >= q25[nonzero_des]) & (pred_mean[nonzero_des] <= q75[nonzero_des])
+            frac_in_range_25_75 = sum(in_range_25)/len(nonzero_des)
+            pert_metric[pert]['frac_in_range_25_75_non_dropout'] = frac_in_range_25_75
+
+            zero_idx = np.where(std > 0)[0]
+            sigma = (np.abs(pred_mean[zero_idx] - mean[zero_idx]))/(std[zero_idx])
+            pert_metric[pert]['mean_sigma_non_dropout'] = np.mean(sigma)
+            pert_metric[pert]['std_sigma_non_dropout'] = np.std(sigma)
+            pert_metric[pert]['frac_sigma_below_1_non_dropout'] = 1 - len(np.where(sigma > 1)[0])/len(zero_idx)
+            pert_metric[pert]['frac_sigma_below_2_non_dropout'] = 1 - len(np.where(sigma > 2)[0])/len(zero_idx)
+        
+        p_idx = np.where(test_res['pert_cat'] == pert)[0]
+        for m, fct in metric2fct.items():
+            if m != 'mse':
+                val = fct(test_res['pred'][p_idx].mean(0)[de_idx] - ctrl[0][de_idx], test_res['truth'][p_idx].mean(0)[de_idx]-ctrl[0][de_idx])[0]
+                if np.isnan(val):
+                    val = 0
+                pert_metric[pert][m + '_delta_top20_de_non_dropout'] = val
+
+
+                val = fct(test_res['pred'][p_idx].mean(0)[de_idx], test_res['truth'][p_idx].mean(0)[de_idx])[0]
+                if np.isnan(val):
+                    val = 0
+                pert_metric[pert][m + '_top20_de_non_dropout'] = val
+            else:
+                val = fct(test_res['pred'][p_idx].mean(0)[de_idx] - ctrl[0][de_idx], test_res['truth'][p_idx].mean(0)[de_idx]-ctrl[0][de_idx])
+                pert_metric[pert][m + '_top20_de_non_dropout'] = val
+                
+    return pert_metric
+    
 def deeper_analysis(adata, test_res, de_column_prefix = 'rank_genes_groups_cov', most_variable_genes = None):
     
     metric2fct = {
@@ -190,6 +427,22 @@ def deeper_analysis(adata, test_res, de_column_prefix = 'rank_genes_groups_cov',
         pert_idx = np.where(test_res['pert_cat'] == pert)[0]    
         pred_mean = np.mean(test_res['pred_de'][pert_idx], axis = 0).reshape(-1,)
         true_mean = np.mean(test_res['truth_de'][pert_idx], axis = 0).reshape(-1,)
+        
+        direc_change = np.abs(np.sign(test_res['pred'][pert_idx].mean(0) - ctrl[0]) - np.sign(test_res['truth'][pert_idx].mean(0) - ctrl[0]))            
+        frac_correct_direction = len(np.where(direc_change == 0)[0])/len(geneid2name)
+        pert_metric[pert]['frac_correct_direction_all'] = frac_correct_direction
+
+        de_idx_map = {20: de_idx,
+                      50: de_idx_50,
+                      100: de_idx_100,
+                      200: de_idx_200
+                     }
+        
+        for val in [20, 50, 100, 200]:
+            
+            direc_change = np.abs(np.sign(test_res['pred'][pert_idx].mean(0)[de_idx_map[val]] - ctrl[0][de_idx_map[val]]) - np.sign(test_res['truth'][pert_idx].mean(0)[de_idx_map[val]] - ctrl[0][de_idx_map[val]]))            
+            frac_correct_direction = len(np.where(direc_change == 0)[0])/val
+            pert_metric[pert]['frac_correct_direction_' + str(val)] = frac_correct_direction
 
         mean = np.mean(test_res['truth_de'][pert_idx], axis = 0)
         std = np.std(test_res['truth_de'][pert_idx], axis = 0)
@@ -207,7 +460,12 @@ def deeper_analysis(adata, test_res, de_column_prefix = 'rank_genes_groups_cov',
         if len(nonzero_des) == 0:
             pass
             # pert that all de genes are 0...
-        else:
+        else:            
+            
+            direc_change = np.abs(np.sign(pred_mean[nonzero_des] - ctrl[0][de_idx][nonzero_des]) - np.sign(true_mean[nonzero_des] - ctrl[0][de_idx][nonzero_des]))            
+            frac_correct_direction = len(np.where(direc_change == 0)[0])/len(nonzero_des)
+            pert_metric[pert]['frac_correct_direction_20_nonzero'] = frac_correct_direction
+            
             in_range = (pred_mean[nonzero_des] >= min_[nonzero_des]) & (pred_mean[nonzero_des] <= max_[nonzero_des])
             frac_in_range = sum(in_range)/len(nonzero_des)
             pert_metric[pert]['frac_in_range'] = frac_in_range

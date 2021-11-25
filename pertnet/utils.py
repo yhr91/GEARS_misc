@@ -113,12 +113,12 @@ def uncertainty_loss_fct(pred, logvar, y, perts, loss_mode = 'l2', gamma = 1, re
             #losses += torch.sum(0.5 * torch.exp(-logvar_p) * (pred_p - y_p)**(2 + gamma) + 0.01 * logvar_p)/pred_p.shape[0]/pred_p.shape[1]
             #losses += torch.sum((pred_p - y_p)**(2 + gamma) + 0.1 * torch.exp(-logvar_p) * (pred_p - y_p)**(2 + gamma) + 0.1 * logvar_p)/pred_p.shape[0]/pred_p.shape[1]
             losses += reg_core * torch.sum((pred_p - y_p)**(2 + gamma) + reg * torch.exp(-logvar_p) * (pred_p - y_p)**(2 + gamma))/pred_p.shape[0]/pred_p.shape[1]
-       
+        
             
     return losses/(len(set(perts)))
 
 
-def loss_fct(pred, y, perts, weight=1, loss_type = 'macro', loss_mode = 'l2', gamma = 1):
+def loss_fct(pred, y, perts, weight=1, loss_type = 'macro', loss_mode = 'l2', gamma = 1, loss_direction = False, ctrl = None, direction_lambda = 1e-3, filter_status = False, dict_filter = None):
 
         # Micro average MSE
         if loss_type == 'macro':
@@ -126,13 +126,26 @@ def loss_fct(pred, y, perts, weight=1, loss_type = 'macro', loss_mode = 'l2', ga
             perts = np.array(perts)
             losses = torch.tensor(0.0, requires_grad=True).to(pred.device)
             for p in set(perts):
-                pred_p = pred[np.where(perts==p)[0]]
-                y_p = y[np.where(perts==p)[0]]
+                if (p!= 'ctrl') and filter_status:
+                    retain_idx = dict_filter[p]
+                    pred_p = pred[np.where(perts==p)[0]][:, retain_idx]
+                    y_p = y[np.where(perts==p)[0]][:, retain_idx]
+                else:
+                    pred_p = pred[np.where(perts==p)[0]]
+                    y_p = y[np.where(perts==p)[0]]
+                    
                 if loss_mode == 'l2':
                     losses += torch.sum((pred_p - y_p)**2)/pred_p.shape[0]/pred_p.shape[1]
                 elif loss_mode == 'l3':
                     losses += torch.sum((pred_p - y_p)**(2 + gamma))/pred_p.shape[0]/pred_p.shape[1]
-                
+
+                if loss_direction:
+                    if (p!= 'ctrl') and filter_status:
+                        losses += torch.sum(direction_lambda * (torch.sign(y_p - ctrl[retain_idx]) - torch.sign(pred_p - ctrl[retain_idx]))**2)/pred_p.shape[0]/pred_p.shape[1]
+                        
+                    else:
+                        losses += torch.sum(direction_lambda * (torch.sign(y_p - ctrl) - torch.sign(pred_p - ctrl))**2)/pred_p.shape[0]/pred_p.shape[1]
+                    #losses += torch.sum(direction_lambda * (pred_p - y_p)**(2 + gamma) * (torch.sign(y_p - ctrl) - torch.sign(pred_p - ctrl))**2)/pred_p.shape[0]/pred_p.shape[1]
             return losses/(len(set(perts)))
 
         else:
