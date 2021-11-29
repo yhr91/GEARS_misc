@@ -173,10 +173,11 @@ def trainer(args):
         args['G_sim_weight'] = sim_network.edge_weight
         
     if args['gene_sim_pos_emb']:
-        fname = get_coexpression_network_from_train(adata, pertdl, args, args['sim_gnn_gene_threshold'], args['sim_gnn_gene_k'])
-        genexp_network = GeneCoexpressNetwork(fname, args['gene_list'], node_map = pertdl.node_map)
-        args['G_coexpress'] = genexp_network.edge_index
-        args['G_coexpress_weight'] = genexp_network.edge_weight
+        edge_list = get_similarity_network(args['network_type_gene'], args['dataset'], adata, pertdl, args, args['sim_gnn_gene_threshold'], args['sim_gnn_gene_k'])
+        sim_network = GeneSimNetwork(edge_list, args['gene_list'], node_map = pertdl.node_map)
+        
+        args['G_coexpress'] = sim_network.edge_index
+        args['G_coexpress_weight'] = sim_network.edge_weight
     
     if args['filter'] != 'N/A':
         pert_full_id2pert = dict(adata.obs[['cov_drug_dose_name', 'condition']].values)
@@ -434,12 +435,20 @@ def parse_arguments():
     parser.add_argument('--uncertainty_reg', type=float, default=1)
     parser.add_argument('--uncertainty_reg_core', type=float, default=1)
 
-    parser.add_argument('--gene_sim_pos_emb', default=False, action='store_true')
     parser.add_argument('--sim_gnn_gene_k', type=int, default=5)    
     parser.add_argument('--sim_gnn_gene_threshold', type=float, default=0.4)  
     parser.add_argument('--network_type', default = 'gene_ontology', type=str, choices = ['co-expression_train', 'gene_ontology', 'string_ppi', 'all'])
-    parser.add_argument('--indv_out_layer', default=False, action='store_true')
+    parser.add_argument('--network_type_gene', default = 'co-expression_train', type=str, choices = ['co-expression_train', 'gene_ontology', 'string_ppi', 'all'])
 
+    parser.add_argument('--indv_out_layer', default=False, action='store_true')
+    parser.add_argument('--gene_sim_pos_emb', default=False, action='store_true')
+    parser.add_argument('--gene_sim_pos_emb_num_layers', type=int, default=1)    
+    parser.add_argument('--model_backend', choices = ['GCN', 'GAT', 'SGC'], 
+                        type = str, default = 'SGC', help='model name')  
+    parser.add_argument('--indv_out_hidden_size', type=int, default=4)    
+    parser.add_argument('--num_mlp_layers', type=int, default=3)    
+
+    
     # loss
     parser.add_argument('--pert_loss_wt', type=int, default=1,
                         help='weights for perturbed cells compared to control cells')
