@@ -49,7 +49,12 @@ def train(model, train_loader, val_loader, args, ctrl_expression, dict_filter, d
                                   loss_mode = args['loss_mode'], 
                                   gamma = args['focal_gamma'],
                                   reg = args['uncertainty_reg'],
-                                  reg_core = args['uncertainty_reg_core'])
+                                  reg_core = args['uncertainty_reg_core'],
+                                  loss_direction = args['loss_direction'], 
+                                  ctrl = ctrl_expression, 
+                                  filter_status = args['filter_status'],
+                                  dict_filter = dict_filter,
+                                  direction_lambda = args['direction_lambda'])
             else:
                 pred = model(batch)
                 # Compute loss
