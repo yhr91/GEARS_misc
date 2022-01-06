@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import scanpy as sc
 import networkx as nx
+sys.path.append('../model/')
 from flow import get_graph
 from sklearn.model_selection import train_test_split
 from sklearn import linear_model
@@ -44,15 +45,15 @@ def train_regressor(X, y, kind='linear'):
         model = MLPRegressor(hidden_layer_sizes=(20,10), max_iter=1000)
 
     reg = model.fit(X, y)
-    loss = np.sqrt(np.mean((y - model.predict(X.values))**2))
+    loss = np.sqrt(np.mean((y - model.predict(X))**2))
     return reg, loss, reg.score(X, y)
 
 
 def evaluate_regressor(model, X, y):
-    y_cap = model.predict(X.values)
+    y_cap = model.predict(X)
     loss = np.sqrt(np.mean((y - y_cap)**2))
 
-    return loss, y.values, y_cap
+    return loss, y, y_cap
 
 def init_dict():
     d = {}
@@ -71,18 +72,7 @@ def init_dict():
 def max_median_norm(df):
     return df/df.max().median()
 
-def set_up_TM_data(X, norm=True):
-    TM_data = sc.read_h5ad('/dfs/user/yhr/CPA/datasets/TMSenis_brain_myeloid.h5ad')
-    TM_data = TM_data.to_df()
-    if (norm):
-        TM_data = max_median_norm(TM_data)
-        X = max_median_norm(X.T)
-    X_TM = X.merge(TM_data, left_index=True, right_index=True,
-                     suffixes=[None,"_TM"])
-    X = X_TM.loc[:,[c for c in X_TM.columns if '_TM' not in c]]
-    return X.T, X_TM.T
-
-def get_weights(adj_mat, X, nodelist, lim=20000):
+def get_weights(adj_mat, exp_adata, nodelist, lim=50000):
     models = init_dict()
     val_loss = init_dict()
     train_loss = init_dict()
@@ -102,11 +92,11 @@ def get_weights(adj_mat, X, nodelist, lim=20000):
 
     def trainer(kind, feats, y, train_split, val_split):
         model, train_loss_, train_score_ = train_regressor(
-                                        feats.loc[train_split,:],
-                                        y.loc[train_split], kind=kind)
+                                        feats[train_split,:],
+                                        y[train_split], kind=kind)
         val_loss_, true, pred = evaluate_regressor(model,
-                                       feats.loc[val_split, :],
-                                       y.loc[val_split])
+                                       feats[val_split, :],
+                                       y[val_split])
 
         # Store results
         val_loss[kind].append(val_loss_)
@@ -126,18 +116,16 @@ def get_weights(adj_mat, X, nodelist, lim=20000):
             target = np.array(nodelist)[itr]
 
             try:
-                feats = X.loc[:, TFs]
-                y = X.loc[:, target]
+                feats = exp_adata[:, TFs].X.toarray()
+                y = exp_adata[:, target].X.toarray()
             except:
                 continue
             train_split, test_split = data_split(feats, y, size=0.1)
             if train_split==-1: continue;
 
-            feats = feats.loc[train_split,:]
+            feats = feats[train_split,:]
             train_split, val_split = data_split(feats, y, size=0.1)
             if train_split==-1: continue;
-
-            print(count)
 
             # Add data from TM
             #feats_TM = X_TM.loc[:, TFs]
@@ -157,9 +145,9 @@ def get_weights(adj_mat, X, nodelist, lim=20000):
             model = linear_model.LinearRegression()
             model.coef_ = np.ones(len(idx))
             model.intercept_ = 0
-            val_loss_, true, pred = evaluate_regressor(model, feats.loc[
+            val_loss_, true, pred = evaluate_regressor(model, feats[
                                                           val_split,:],
-                                                  y.loc[val_split])
+                                                  y[val_split])
             val_loss['ones'].append(val_loss_)
             trues['ones'].extend(true)
             preds['ones'].extend(pred)
@@ -168,11 +156,11 @@ def get_weights(adj_mat, X, nodelist, lim=20000):
             for j,k in enumerate(TFs):
                 adj_list['TF'].append(k)
                 adj_list['target'].append(target)
-                adj_list['importance'].append(models['linear'][-1][j])
+                adj_list['importance'].append(models['linear'][-1][0][j])
 
             # Save the test split for use later
             test_splits[target] = test_split
-
+            print(count)
             count += 1
 
         if count >= lim:
@@ -181,11 +169,8 @@ def get_weights(adj_mat, X, nodelist, lim=20000):
 
 
 def main(args):
-    X = pd.read_csv(args.exp_matrix, delimiter='\t',
-                                 index_col=0)
-    regs = pd.read_csv(args.regulons_path, header=2)
-
-    G = get_graph(name = args.graph_name, TF_only=False)
+    exp_adata = sc.read_h5ad(args.exp_matrix)
+    G = pd.read_csv(args.graph_name, header=None)
     G = nx.from_pandas_edgelist(G, source=0,
                         target=1, create_using=nx.DiGraph())
     adj_mat = nx.linalg.graphmatrix.adjacency_matrix(G).todense().T
@@ -193,9 +178,8 @@ def main(args):
 
     # Remove self-edges
     np.fill_diagonal(adj_mat, 0)
-    X = X.T
 
-    models, adj_list, test_splits = get_weights(adj_mat, X, nodelist, lim=1000)
+    models, adj_list, test_splits = get_weights(adj_mat, exp_adata, nodelist, lim=1000)
 
     # Save final results
     #np.save('train_loss', specs[])
@@ -215,8 +199,6 @@ if __name__ == '__main__':
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     #torch.cuda.set_device(4)
 
-    parser.add_argument('--regulons_path', type=str,
-                        help='Regulons data path')
     parser.add_argument('--exp_matrix', type=str,
                         help='Expression matrix')
     parser.add_argument('--graph_name', type=str,
@@ -226,9 +208,8 @@ if __name__ == '__main__':
 
 
     parser.set_defaults(
-    regulons_path = '../Notebooks/regulons_Norman2019_ctrl_only.csv',
-    exp_matrix = '../Notebooks/Norman2019_ctrl_only.txt',
-    graph_name='Norman2019_ctrl_only',
+    exp_matrix = './temp/Norman2019_split5.h5ad',
+    graph_name='./temp/Norman2019_split5_pearson.txt',
     out_name=None)
 
     args = parser.parse_args()
