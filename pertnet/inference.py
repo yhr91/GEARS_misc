@@ -1,5 +1,7 @@
 import torch
 import numpy as np
+import scanpy as sc
+import utils
 
 from sklearn.metrics import r2_score
 from scipy.stats import pearsonr, spearmanr
@@ -18,22 +20,46 @@ def evaluate(loader, model, args, num_de_idx=20):
     pred_de = []
     truth_de = []
     results = {}
+    func_readouts = []
+    y_funcs = []
 
-    for batch in loader:
+    if args['more_samples']>=1:
+        adata = sc.read_h5ad(args['data_path'])
+        ctrl_adata = adata[adata.obs['condition']=='ctrl']
+
+    for itr, batch in enumerate(loader):
+
         batch.to(args['device'])
         model.to(args['device'])
         pert_cat.extend(batch.pert)
 
         with torch.no_grad():
             if args['uncertainty']:
-                p, logvar = model(batch)
+                p, logvar, p_func = model(batch)
             else:
-                p = model(batch)
+                p, p_func = model(batch)
             t = batch.y
 
+            if args['more_samples']>=1:
+                # This will sample more controls
+                x = torch.stack(torch.split(batch.x[:,0], args['num_genes']))
+                p_delta = p - x
+                sample_controls_ = ctrl_adata.chunk_X(args['more_samples'])
+                sample_controls = np.tile(sample_controls_,(p.shape[0],1))
+                p_delta = p_delta.detach().cpu().numpy()
+                p_delta = np.repeat(p_delta, args['more_samples'], 0)
+                new_p = sample_controls + p_delta
+                pred.extend(new_p)
+                t_numpy = t.detach().cpu().numpy()
+                truth.extend(np.repeat(t_numpy, args['more_samples'], 0))
 
-            pred.extend(p.cpu())
-            truth.extend(t.cpu())
+            else:
+                pred.extend(p.cpu())
+                truth.extend(t.cpu())
+
+            if args['func_readout']:
+                func_readouts.extend(p_func.cpu())
+                y_funcs.extend(batch.func_readout.cpu())
 
             # Differentially expressed genes
             for itr, de_idx in enumerate(batch.de_idx):
@@ -48,15 +74,26 @@ def evaluate(loader, model, args, num_de_idx=20):
     # all genes
     results['pert_cat'] = np.array(pert_cat)
 
-    pred = torch.stack(pred)
-    truth = torch.stack(truth)
-    results['pred']= pred.detach().cpu().numpy()
-    results['truth']= truth.detach().cpu().numpy()
+    if args['more_samples'] >= 1:
+        results['pred']= np.stack(pred)
+        results['truth']= np.stack(truth)
+
+    else:
+        pred = torch.stack(pred)
+        truth = torch.stack(truth)
+        results['pred']= pred.detach().cpu().numpy()
+        results['truth']= truth.detach().cpu().numpy()
 
     pred_de = torch.stack(pred_de)
     truth_de = torch.stack(truth_de)
     results['pred_de']= pred_de.detach().cpu().numpy()
     results['truth_de']= truth_de.detach().cpu().numpy()
+
+    if args['func_readout']:
+        func_readouts = torch.stack(func_readouts)
+        y_funcs = torch.stack(y_funcs)
+        results['func_readout'] = func_readouts.detach().cpu().numpy()
+        results['y_funcs'] = y_funcs.detach().cpu().numpy()
 
     return results
 
@@ -144,7 +181,23 @@ def compute_metrics(results, gene_idx=None):
         metrics[m] = np.mean(metrics[m])
         metrics[m + '_de'] = np.mean(metrics[m + '_de'])
 
+    if 'func_readout' in results.keys():
+        error = results['func_readout'] - results['y_funcs']
+        error = np.array([e for e in error if not np.isnan(e)])
+        metrics['func_mse'] = np.mean(error**2)
+
     return metrics, metrics_pert
+
+
+def compute_synergy_loss(results, mean_control, high_umi_idx):
+    pred_res = utils.get_test_set_results_seen2(results, 'POTENTIATION')
+    all_perts = np.unique(results['pert_cat'])
+    linear_params = utils.get_linear_params(pred_res, high_umi_idx,
+                                            mean_control,all_perts)
+    synergy_loss = np.sum([np.abs(linear_params[k]['pred']['mag']
+                               - linear_params[k]['truth']['mag']) for k in
+                                linear_params])
+    return synergy_loss
 
 
 def non_zero_analysis(adata, test_res):
@@ -694,7 +747,7 @@ GIs = {
                   'KLF1+TGFBR2',
                   'MAP2K6+SPI1',
                   'SAMD1+TGFBR2',
-                  'TGFBR2+CBARP',
+                  'TGFBR2+C19orf26',
                   'TGFBR2+ETS2',
                   'CBL+UBASH3A',
                   'CEBPE+KLF1',
@@ -705,14 +758,14 @@ GIs = {
                   'ZC3HAV1+CEBPE'],
     'ADDITIVE': ['BPGM+SAMD1',
                 'CEBPB+MAPK1',
-                'CEBPE+OSR2',
+                'CEBPB+OSR2',
                 'DUSP9+PRTG',
                 'FOSB+OSR2',
                 'IRF1+SET',
                 'MAP2K3+ELMSAN1',
                 'MAP2K6+ELMSAN1',
                 'POU3F2+FOXL2',
-                'RHOXF2B+SET',
+                'RHOXF2BB+SET',
                 'SAMD1+PTPN12',
                 'SAMD1+UBASH3B',
                 'SAMD1+ZBTB1',

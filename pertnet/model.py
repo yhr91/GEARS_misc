@@ -50,25 +50,6 @@ class MLP(torch.nn.Module):
             return self.network(x)
 
 
-class Encoder(torch.nn.Module):
-
-    def __init__(self, sizes, batch_norm=True):
-        super(Encoder, self).__init__()
-        layers = []
-        for s in range(len(sizes) - 1):
-            layers += [
-                torch.nn.Linear(sizes[s], sizes[s + 1]),
-                torch.nn.BatchNorm1d(sizes[s + 1])
-                if batch_norm and s < len(sizes) - 1 else None,
-                torch.nn.ReLU()
-            ]
-
-        layers = [l for l in layers if l is not None][:-1]
-        self.network = torch.nn.Sequential(*layers)
-        self.relu = torch.nn.ReLU()
-    def forward(self, x):
-	    return self.network(x)
-
 class PertNet(torch.nn.Module):
     """
     PertNet
@@ -82,9 +63,16 @@ class PertNet(torch.nn.Module):
         self.uncertainty = args['uncertainty']
         self.num_layers = args['num_of_gnn_layers']
         self.network_type = args['network_type']
-        self.args = args        
-
         self.indv_out_layer = args['indv_out_layer']
+        self.indv_out_hidden_size = args['indv_out_hidden_size']
+        self.num_mlp_layers = args['num_mlp_layers']
+
+        # gene structure
+        self.gene_sim_pos_emb = args['gene_sim_pos_emb']
+        self.num_layers_gene_pos = args['gene_sim_pos_emb_num_layers']
+        self.model_backend = args['model_backend']
+
+        self.args = args        
         # lambda for aggregation between global perturbation emb + gene embedding
         self.pert_emb_lambda = args['pert_emb_lambda']
         
@@ -105,6 +93,22 @@ class PertNet(torch.nn.Module):
         self.transform = MLP([hidden_size, hidden_size, hidden_size],
                              last_layer_act='ReLU')
         self.cross_gene_MLP = args['cross_gene_MLP']
+
+        if self.gene_sim_pos_emb:
+            self.G_coexpress = args['G_coexpress'].to(args['device'])
+            self.G_coexpress_weight = args['G_coexpress_weight'].to(args['device'])
+
+            self.emb_trans_v2 = MLP([hidden_size, hidden_size, hidden_size], last_layer_act='ReLU')
+            self.emb_pos = nn.Embedding(self.num_genes, hidden_size, max_norm=True)
+            self.layers_emb_pos = torch.nn.ModuleList()
+            for i in range(1, self.num_layers_gene_pos + 1):
+                if self.model_backend == 'GAT':
+                    self.layers_emb_pos.append(GATConv(hidden_size, hidden_size, heads = 1))
+                elif self.model_backend == 'GCN':
+                    self.layers_emb_pos.append(GCNConv(hidden_size, hidden_size))
+                elif self.model_backend == 'SGC':
+                    self.layers_emb_pos.append(SGConv(hidden_size, hidden_size, 1))
+
 
         if self.indv_out_layer:
             self.recovery_w = MLP([hidden_size, hidden_size*2, hidden_size], last_layer_act='linear')
@@ -139,6 +143,11 @@ class PertNet(torch.nn.Module):
             
             nn.init.xavier_normal_(self.indv_w1)
             nn.init.xavier_normal_(self.indv_b1)
+
+            nn.init.kaiming_uniform_(self.indv_w1, a=math.sqrt(5))
+            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.indv_w1)
+            bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
+            nn.init.uniform_(self.indv_b1, -bound, bound)
 
             #nn.init.xavier_normal_(self.indv_w_out)
             #nn.init.xavier_normal_(self.indv_b_out)
@@ -203,6 +212,19 @@ class PertNet(torch.nn.Module):
         emb = self.bn_emb(emb)
         base_emb = self.emb_trans(emb)
         #base_emb = self.bn_base_emb(base_emb)
+
+        if self.gene_sim_pos_emb:
+            pos_emb = self.emb_pos(torch.LongTensor(list(range(self.num_genes))).repeat(num_graphs, ).to(self.args['device']))
+            for idx, layer in enumerate(self.layers_emb_pos):
+                pos_emb = layer(pos_emb, self.G_coexpress, self.G_coexpress_weight)
+                if idx < len(self.layers_emb_pos) - 1:
+                    pos_emb = pos_emb.relu()
+
+            #base_emb = self.emb_trans(torch.cat((emb, pos_emb), axis = 1))
+
+            base_emb = base_emb + 0.2 * pos_emb
+            base_emb = self.emb_trans_v2(base_emb)
+
 
         ## get perturbation index and embeddings
         pert = x[:, 1].reshape(-1,1)
