@@ -114,7 +114,7 @@ def weighted_mse_loss(input, target, weight):
 
 def uncertainty_loss_fct(pred, logvar, y, perts, loss_mode = 'l2', gamma = 1, reg = 0.1, 
                         reg_core = 1, loss_direction = False, ctrl = None, direction_lambda = 1e-3,
-                        filter_status = False, dict_filter = None):
+                        filter_status = False, dict_filter = None, pred_func=None, y_func=None):
     perts = np.array(perts)
     losses = torch.tensor(0.0, requires_grad=True).to(pred.device)
     if pred_func is not None:
@@ -171,7 +171,7 @@ def uncertainty_loss_fct(pred, logvar, y, perts, loss_mode = 'l2', gamma = 1, re
 
 def loss_fct(pred, y, perts, weight=1, loss_type = 'macro', loss_mode = 'l2', gamma = 1, 
             loss_direction = False, ctrl = None, direction_lambda = 1e-3, 
-            filter_status = False, dict_filter = None):
+            filter_status = False, dict_filter = None, pred_func=None, y_func=None):
 
         # Micro average MSE
         if loss_type == 'macro':
