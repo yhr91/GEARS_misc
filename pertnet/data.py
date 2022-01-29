@@ -66,8 +66,7 @@ class PertDataloader():
         print("Creating pyg object for each cell in the data...")
         
         # create dataset processed pyg objects
-        dataset_fname = '../kexin/data_pyg/' + \
-                             self.args['dataset'] + '.pkl'
+        dataset_fname = './data_pyg/' + self.args['dataset'] + '.pkl'
                 
         if os.path.isfile(dataset_fname):
             print("Local copy of pyg dataset is detected. Loading...")
@@ -85,6 +84,10 @@ class PertDataloader():
         
         if self.args['test_perts'] != 'N/A':
             split_path = split_path[:-4] + '_' + self.args['test_perts'] + '.pkl'
+
+        if self.args['test_pert_genes'] != 'N/A':
+            split_path = split_path[:-4] + '_' + self.args['test_pert_genes']\
+                         + '.pkl'
         
         if (self.args['split'] == 'custom') and (self.args['split_path'] != 'N/A'):
             split_path = self.args['split_path']
@@ -140,10 +143,24 @@ class PertDataloader():
             elif self.args['split'][:5] == 'combo':
                 split_type = 'combo'
                 seen = int(self.args['split'][-1])
+
+                if self.args['test_perts'] != 'N/A':
+                    test_perts = self.args['test_perts'].split('_')
+                else:
+                    test_perts = None
+
+                if self.args['test_pert_genes'] != 'N/A':
+                    test_pert_genes = self.args['test_pert_genes'].split('_')
+                else:
+                    test_pert_genes = None
+
                 DS = DataSplitter(self.adata, split_type=split_type,
                                   seen=int(seen))
-                adata = DS.split_data(test_size=self.args['test_set_fraction'], split_name='split',
-                                       seed=self.args['seed'])
+                adata = DS.split_data(test_size=self.args['test_set_fraction'],
+                                      split_name='split',
+                                      test_perts=test_perts,
+                                      test_pert_genes=test_pert_genes,
+                                      seed=self.args['seed'])
             
             elif self.args['split'] == 'no_split':          
                 adata = self.adata

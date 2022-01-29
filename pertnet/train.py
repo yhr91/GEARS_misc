@@ -13,13 +13,17 @@ from torch.optim.lr_scheduler import StepLR
 
 from model import No_Perturb, PertNet
 from data import PertDataloader, GeneSimNetwork, GeneCoexpressNetwork
-from inference import evaluate, compute_metrics, deeper_analysis, GI_subgroup, non_dropout_analysis, non_zero_analysis
-from utils import loss_fct, uncertainty_loss_fct, parse_any_pert, get_coexpression_network_from_train, get_similarity_network
+from inference import evaluate, compute_metrics, deeper_analysis, \
+    GI_subgroup, non_dropout_analysis, non_zero_analysis, compute_synergy_loss
+from utils import loss_fct, uncertainty_loss_fct, parse_any_pert, \
+                  get_coexpression_network_from_train, get_similarity_network, \
+                  get_high_umi_idx, get_mean_ctrl, combine_res
 
 torch.manual_seed(0)
 
 import warnings
 warnings.filterwarnings("ignore")
+
 
 def train(model, train_loader, val_loader, args, ctrl_expression, dict_filter, device="cpu"):
     best_model = deepcopy(model)
@@ -29,7 +33,8 @@ def train(model, train_loader, val_loader, args, ctrl_expression, dict_filter, d
     scheduler = StepLR(optimizer, step_size=args['lr_decay_step_size'], gamma=args['lr_decay_factor'])
 
     min_val = np.inf
-    
+    adata = sc.read_h5ad(args['data_path'])
+
     print('Start Training...')
 
     for epoch in range(args["max_epochs"]):
@@ -42,27 +47,32 @@ def train(model, train_loader, val_loader, args, ctrl_expression, dict_filter, d
             batch.to(device)            
             model.to(device)
             optimizer.zero_grad()
+
             y = batch.y
+            if args['func_readout']:
+                y_func = batch.func_readout
+            else:
+                y_func = None
+
             if args['uncertainty']:
-                pred, logvar = model(batch)
+                pred, logvar, pred_func = model(batch)
                 loss = uncertainty_loss_fct(pred, logvar, y, batch.pert,
+                                  pred_func=pred_func,
+                                  y_func=batch.func_readout,
                                   loss_mode = args['loss_mode'], 
                                   gamma = args['focal_gamma'],
                                   reg = args['uncertainty_reg'],
-                                  reg_core = args['uncertainty_reg_core'],
-                                  loss_direction = args['loss_direction'], 
-                                  ctrl = ctrl_expression, 
-                                  filter_status = args['filter_status'],
-                                  dict_filter = dict_filter,
-                                  direction_lambda = args['direction_lambda'])
+                                  reg_core = args['uncertainty_reg_core'])
             else:
-                pred = model(batch)
+                pred, pred_func = model(batch)
                 # Compute loss
-                loss = loss_fct(pred, y, batch.pert, args['pert_loss_wt'], 
-                                  loss_mode = args['loss_mode'], 
-                                  gamma = args['focal_gamma'],
-                                  loss_type = args['loss_type'],
-                                  loss_direction = args['loss_direction'], 
+                loss = loss_fct(pred, y, batch.pert, args['pert_loss_wt'],
+                                pred_func=pred_func,
+                                y_func=y_func,
+                                loss_mode = args['loss_mode'],
+                                gamma = args['focal_gamma'],
+                                loss_type = args['loss_type'],
+                                loss_direction = args['loss_direction'],
                                 ctrl = ctrl_expression, 
                                 filter_status = args['filter_status'],
                                 dict_filter = dict_filter,
@@ -80,6 +90,7 @@ def train(model, train_loader, val_loader, args, ctrl_expression, dict_filter, d
             if step % args["print_progress_steps"] == 0:
                 log = "Epoch {} Step {} Train Loss: {:.4f}" 
                 print(log.format(epoch + 1, step + 1, loss.item()))
+
         scheduler.step()
         # Evaluate model performance on train and val set
         total_loss /= num_graphs
@@ -87,7 +98,17 @@ def train(model, train_loader, val_loader, args, ctrl_expression, dict_filter, d
         val_res = evaluate(val_loader, model, args)
         train_metrics, _ = compute_metrics(train_res)
         val_metrics, _ = compute_metrics(val_res)
-        
+
+        # Synergy loss
+        high_umi_idx = get_high_umi_idx(args['gene_list'])
+        mean_control = get_mean_ctrl(adata)
+        train_metrics['synergy_loss'] = compute_synergy_loss(train_res, mean_control,
+                                            high_umi_idx)
+        ## TODO this shouuld be val only and not train_val
+        val_metrics['synergy_loss'] = compute_synergy_loss(combine_res(train_res,
+                                        val_res),mean_control, high_umi_idx)
+        val_metrics['synergy_loss'] -= train_metrics['synergy_loss']
+
         # Print epoch performance
         log = "Epoch {}: Train: {:.4f} " \
               "Validation: {:.4f}. " \
@@ -103,6 +124,12 @@ def train(model, train_loader, val_loader, args, ctrl_expression, dict_filter, d
                            'val_'+m: val_metrics[m],
                            'train_de_' + m: train_metrics[m + '_de'],
                            'val_de_'+m: val_metrics[m + '_de']})
+            m = 'synergy_loss'
+            wandb.log({'train_' + m: train_metrics[m]})
+            if args['func_readout']:
+                m = 'func_mse'
+                wandb.log({'train_' + m: train_metrics[m],
+                           'val_' + m: val_metrics[m]})
         
         
         # Print epoch performance for DE genes
@@ -113,9 +140,15 @@ def train(model, train_loader, val_loader, args, ctrl_expression, dict_filter, d
     
             
         # Select best model
-        if val_metrics['mse_de'] < min_val:
-            min_val = val_metrics['mse_de']
-            best_model = deepcopy(model)
+        if args['func_readout'] != None:
+            if val_metrics['func_mse'] < min_val:
+                min_val = val_metrics['func_mse']
+                best_model = deepcopy(model)
+
+        else:
+            if val_metrics['mse_de'] < min_val:
+                min_val = val_metrics['mse_de']
+                best_model = deepcopy(model)
 
     return best_model
 
@@ -135,13 +168,22 @@ def trainer(args):
 
     if args['dataset'] == 'Norman2019':
         data_path = '/dfs/project/perturb-gnn/datasets/Norman2019/Norman2019_hvg+perts_more_de.h5ad'
+    elif args['dataset'] == 'Norman2019_umi':
+        data_path = '/dfs/project/perturb-gnn/datasets/Norman2019/Norman2019_hi_umi+hvg.h5ad'
+    elif args['dataset'] == 'Norman2019_umi_all_poss':
+        data_path = '/dfs/project/perturb-gnn/datasets/Norman2019/Norman2019_hi_umi+hvg_all_poss.h5ad'
+    elif args['dataset'] == 'Norman2019_GI':
+        data_path = '/dfs/project/perturb-gnn/datasets/Norman2019/Norman2019_all_possible_train1.h5ad'
     elif args['dataset'] == 'Adamson2016':
         data_path = '/dfs/project/perturb-gnn/datasets/Adamson2016_hvg+perts_more_de_in_genes.h5ad'
     elif args['dataset'] == 'Dixit2016':
         data_path = '/dfs/project/perturb-gnn/datasets/Dixit2016_hvg+perts_more_de.h5ad'
     elif args['dataset'] == 'Norman2019_Adamson2016':
         data_path = '/dfs/project/perturb-gnn/datasets/trans_norman_adamson/norman2019.h5ad'
-    
+    elif args['dataset'] == 'Frangieh2020':
+        data_path = '/dfs/project/perturb-gnn/Frangieh2020_coculture_hvg+perts_more_de_in_perts.h5ad'
+    args['data_path'] = data_path
+
     s = time()
     adata = sc.read_h5ad(data_path)
     if 'gene_symbols' not in adata.var.columns.values:
@@ -178,11 +220,10 @@ def trainer(args):
         args['G_sim_weight'] = sim_network.edge_weight
         
     if args['gene_sim_pos_emb']:
-        edge_list = get_similarity_network(args['network_type_gene'], args['dataset'], adata, pertdl, args, args['sim_gnn_gene_threshold'], args['sim_gnn_gene_k'])
-        sim_network = GeneSimNetwork(edge_list, args['gene_list'], node_map = pertdl.node_map)
-        
-        args['G_coexpress'] = sim_network.edge_index
-        args['G_coexpress_weight'] = sim_network.edge_weight
+        fname = get_coexpression_network_from_train(adata, pertdl, args, args['sim_gnn_gene_threshold'], args['sim_gnn_gene_k'])
+        genexp_network = GeneCoexpressNetwork(fname, args['gene_list'], node_map = pertdl.node_map)
+        args['G_coexpress'] = genexp_network.edge_index
+        args['G_coexpress_weight'] = genexp_network.edge_weight
     
     if args['filter'] != 'N/A':
         pert_full_id2pert = dict(adata.obs[['cov_drug_dose_name', 'condition']].values)
@@ -232,6 +273,8 @@ def trainer(args):
             wandb.log({'test_' + m: test_metrics[m],
                        'test_de_'+m: test_metrics[m + '_de']                     
                       })
+        if args['func_readout']:
+            wandb.log({'test_func_mse': test_metrics['func_mse']})
     
     out = deeper_analysis(adata, test_res)
     out_non_dropout = non_dropout_analysis(adata, test_res)
@@ -366,8 +409,8 @@ def trainer(args):
                            #'test_de_macro_'+m: test_metrics[m + '_de_macro'],
                            #'test_macro_'+m: test_metrics[m + '_macro'],                       
                           })
-
-        out = deeper_analysis(adata_cross, test_res)
+        if args['deeper_analysis']:
+            out = deeper_analysis(adata_cross, test_res)
 
         metrics = ['frac_in_range', 'frac_in_range_45_55', 'frac_in_range_40_60', 'frac_in_range_25_75', 'mean_sigma', 'std_sigma', 'frac_sigma_below_1', 'frac_sigma_below_2', 'pearson_delta',
                    'pearson_delta_de', 'fold_change_gap_all', 'pearson_delta_top200_hvg', 'fold_change_gap_upreg_3', 
@@ -394,14 +437,24 @@ def parse_arguments():
     # dataset arguments
     parser = argparse.ArgumentParser(description='Perturbation response')
     
-    parser.add_argument('--dataset', type=str, choices = ['Norman2019', 'Adamson2016', 'Dixit2016', 'Norman2019_Adamson2016'], default="Norman2019")
-    parser.add_argument('--split', type=str, choices = ['simulation', 'simulation_single', 'combo_seen0', 'combo_seen1', 'combo_seen2', 'single', 'single_only', 'custom'], default="simulation")
+    parser.add_argument('--dataset', type=str, choices = ['Norman2019',
+                                                          'Adamson2016',
+                                                          'Dixit2016',
+                                                          'Norman2019_GI',
+                                                          'Norman2019_umi',
+                                                          'Frangieh2020' 
+                                                          'Norman2019_umi_all_poss',
+                                                          'Norman2019_Adamson2016'], default="Norman2019_umi")
+    parser.add_argument('--split', type=str, choices = ['simulation', 'simulation_single', 'combo_seen0', 'combo_seen1', 'combo_seen2', 'single', 'single_only', 'custom'],
+                                                        default="combo_seen2")
     parser.add_argument('--split_path', type=str, default='N/A')
-    parser.add_argument('--seed', type=int, default=1)    
+    parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--test_set_fraction', type=float, default=0.1)
     parser.add_argument('--train_gene_set_size', type=float, default=0.75)
     parser.add_argument('--combo_seen2_train_frac', type=float, default=0.75)
     parser.add_argument('--test_perts', type=str, default='N/A')
+    parser.add_argument('--test_pert_genes', type=str, default='N/A')
+    parser.add_argument('--more_samples', type=int, default=0)
     parser.add_argument('--only_test_set_perts', default=False, action='store_true')
     
     # Dataloader related
@@ -413,10 +466,11 @@ def parse_arguments():
     parser.add_argument('--perturbation_key', type=str, default="condition")
     parser.add_argument('--binary_pert', default=True, action='store_false')
     parser.add_argument('--ctrl_remove_train', default=False, action='store_true')
+    parser.add_argument('--func_readout', type=str, default=None)
 
     
     # training arguments
-    parser.add_argument('--device', type=str, default='cuda')
+    parser.add_argument('--device', type=str, default='cuda:5')
     parser.add_argument('--max_epochs', type=int, default=20)
     parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
     parser.add_argument('--lr_decay_step_size', type=int, default=1)
@@ -440,20 +494,14 @@ def parse_arguments():
     parser.add_argument('--uncertainty_reg', type=float, default=1)
     parser.add_argument('--uncertainty_reg_core', type=float, default=1)
 
+    parser.add_argument('--gene_sim_pos_emb', default=False, action='store_true')
     parser.add_argument('--sim_gnn_gene_k', type=int, default=5)    
     parser.add_argument('--sim_gnn_gene_threshold', type=float, default=0.4)  
-    parser.add_argument('--network_type', default = 'gene_ontology', type=str, choices = ['co-expression_train', 'gene_ontology', 'string_ppi', 'all'])
-    parser.add_argument('--network_type_gene', default = 'co-expression_train', type=str, choices = ['co-expression_train', 'gene_ontology', 'string_ppi', 'all'])
+    parser.add_argument('--network_type', default = 'gene_ontology', type=str,
+                        choices = ['co-expression_train', 'gene_ontology', 'string_ppi', 'all'])
+    parser.add_argument('--indv_out_layer', default=True, action='store_true')
+    parser.add_argument('--cross_gene_MLP', default=False, action='store_true')
 
-    parser.add_argument('--indv_out_layer', default=False, action='store_true')
-    parser.add_argument('--gene_sim_pos_emb', default=False, action='store_true')
-    parser.add_argument('--gene_sim_pos_emb_num_layers', type=int, default=1)    
-    parser.add_argument('--model_backend', choices = ['GCN', 'GAT', 'SGC'], 
-                        type = str, default = 'SGC', help='model name')  
-    parser.add_argument('--indv_out_hidden_size', type=int, default=4)    
-    parser.add_argument('--num_mlp_layers', type=int, default=3)    
-
-    
     # loss
     parser.add_argument('--pert_loss_wt', type=int, default=1,
                         help='weights for perturbed cells compared to control cells')
@@ -461,7 +509,7 @@ def parse_arguments():
                         help='micro averaged or not')
     parser.add_argument('--loss_mode', choices = ['l2', 'l3'], type = str, default = 'l3')
     parser.add_argument('--focal_gamma', type=int, default=2)    
-    parser.add_argument('--loss_direction', default=False, action='store_true')
+    parser.add_argument('--loss_direction', default=True, action='store_true')
     parser.add_argument('--direction_lambda', type=float, default=1e-1)    
     parser.add_argument('--filter', type=str, default='N/A', choices = ['non_pert_zero', 'non_dropout'])    
 
@@ -472,13 +520,14 @@ def parse_arguments():
                 help='Use wandb or not')
     parser.add_argument('--project_name', type=str, default='pert_gnn',
                         help='project name')
-    parser.add_argument('--entity_name', type=str, default='kexinhuang',
+    parser.add_argument('--entity_name', type=str, default='yroohani',
                         help='entity name')
-    parser.add_argument('--exp_name', type=str, default='N/A',
+    parser.add_argument('--exp_name', type=str, default='testing',
                         help='entity name')
     
     # misc
-    parser.add_argument('--save_model', default=False, action='store_true')
+    parser.add_argument('--deeper_analysis', default=False, action='store_true')
+    parser.add_argument('--save_model', default=True, action='store_true')
     return dict(vars(parser.parse_args()))
 
 
