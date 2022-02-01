@@ -172,15 +172,15 @@ def trainer(args):
             wandb.config.update(args)
 
     if args['dataset'] == 'Norman2019':
-        data_path = '/lfs/local/0/kexinh/dataset/perturb_gnn/Norman2019_hvg+perts_more_de.h5ad'
+        data_path = '/dfs/project/perturb-gnn/datasets/Norman2019/Norman2019_hvg+perts_more_de.h5ad'
     elif args['dataset'] == 'Norman2019_umi':
-        data_path = '/lfs/local/0/kexinh/dataset/perturb_gnn/Norman2019_hi_umi+hvg.h5ad'
+        data_path = '/dfs/project/perturb-gnn/datasets/Norman2019/Norman2019_hi_umi+hvg.h5ad'
     elif args['dataset'] == 'Norman2019_umi_all_poss':
         data_path = '/dfs/project/perturb-gnn/datasets/Norman2019/Norman2019_hi_umi+hvg_all_poss.h5ad'
     elif args['dataset'] == 'Norman2019_GI':
         data_path = '/dfs/project/perturb-gnn/datasets/Norman2019/Norman2019_all_possible_train1.h5ad'
     elif args['dataset'] == 'Adamson2016':
-        data_path = '/lfs/local/0/kexinh/dataset/perturb_gnn/Adamson2016_hvg+perts_more_de_in_genes.h5ad'
+        data_path = '/dfs/project/perturb-gnn/datasets/Adamson2016_hvg+perts_more_de_in_genes.h5ad'
     elif args['dataset'] == 'Dixit2016':
         data_path = '/dfs/project/perturb-gnn/datasets/Dixit2016_hvg+perts_more_de.h5ad'
     elif args['dataset'] == 'Norman2019_Adamson2016':
