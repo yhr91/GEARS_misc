@@ -40,7 +40,7 @@ def np_pearson_cor(x, y):
     return np.maximum(np.minimum(result, 1.0), -1.0)
 
 
-def get_similarity_network(network_type, dataset, adata, pertdl, args, threshold = 0.4, k = 10):
+def get_similarity_network(network_type, dataset, adata, pertdl, args, threshold = 0.4, k = 10, network_randomize = False):
     
     if network_type == 'co-expression_train':
         df_out = get_coexpression_network_from_train(adata, pertdl, args, threshold, k)
@@ -55,12 +55,16 @@ def get_similarity_network(network_type, dataset, adata, pertdl, args, threshold
             df_jaccard = pd.read_csv('/dfs/user/kexinh/perturb_GNN/kexin/gene_sim_jc_filter_adamson.csv')
         elif dataset == 'Frangieh2020':
             df_jaccard = pd.read_csv('/dfs/user/kexinh/perturb_GNN/kexin/gene_sim_jc_filter_frangieh.csv')
+        elif dataset == 'Dixit2016':
+            df_jaccard = pd.read_csv('/dfs/user/kexinh/perturb_GNN/kexin/gene_sim_jc_filter_dixit.csv')
         df_out = df_jaccard.groupby('target').apply(lambda x: x.nlargest(k + 1,['importance'])).reset_index(drop = True)
     elif network_type == 'string_ppi':
         df_string =  pd.read_csv('/dfs/project/perturb-gnn/graphs/STRING_full_9606.csv')
         gene_list = adata.var.gene_name.values
         df_out = get_string_ppi(df_string, gene_list, k)
         
+    if network_randomize:
+        df_out['source'] = df_out['source'].sample(frac = 1, random_state=1).values
     return df_out
         
 def get_string_ppi(df_string, gene_list, k):        

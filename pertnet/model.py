@@ -12,6 +12,248 @@ import pandas as pd
 
 import sys
 
+# Linear model for simulating linear perturbation effects
+class linear_model():
+    def __init__(self, graph_path, weights_path, gene_list,
+                 binary=False, pos_edges=False, hops=3,
+                 species='human'):
+        self.TFs = get_TFs(species)
+        self.gene_list = gene_list
+
+        # Set up graph structure
+        G_df = get_graph(name = graph_path, TF_only=False)
+        print('Edges: '+str(len(G_df)))
+        self.G = nx.from_pandas_edgelist(G_df, source=0,
+                            target=1, create_using=nx.DiGraph())
+        
+        for n in self.gene_list:
+            if n not in self.G.nodes():
+                self.G.add_node(n)
+        
+        # Add edge weights
+        self.read_weights = pd.read_csv(weights_path, index_col=0)
+        try:
+            self.read_weights = self.read_weights.set_index('TF')
+        except:
+            pass
+
+        # Get adjacency matrix
+        self.adj_mat = self.create_adj_mat()
+
+        A = self.adj_mat.T
+        if binary and pos_edges:
+                A = np.array(A != 0).astype('float')
+
+        # Set the diagonal elements to zero everywhere except the TFs
+        np.fill_diagonal(A, 0)
+        each_hop = A.copy()
+        last_hop = A.copy()
+        for k in range(hops-1):
+            last_hop = last_hop @ each_hop
+            if binary:
+                A += last_hop/(k+2)
+            else:
+                A += last_hop
+        self.A = A
+    
+    
+    def create_adj_mat(self):
+        # Create a df version of the graph for merging
+        G_df = pd.DataFrame(self.G.edges(), columns=['TF', 'target'])
+
+        # Merge it with the weights DF
+        weighted_G_df = self.read_weights.merge(G_df, on=['TF', 'target'])
+        for w in weighted_G_df.iterrows():
+            add_weight(self.G, w[1]['TF'], w[1]['target'], w[1]['importance'])
+
+        # Get an adjacency matrix based on the gene ordering from the DE list
+        return nx.linalg.graphmatrix.adjacency_matrix(
+            self.G, nodelist=self.gene_list).todense()
+            
+
+    def simulate_pert(self, pert_genes, pert_mags=None):
+        """
+        Returns predicted differential expression (delta) upon perturbing
+        a list of genes 'pert_genes'
+        """
+        
+        # Create perturbation vector
+        pert_idx = np.where([(g in pert_genes) for g in self.gene_list])[0]
+        theta = np.zeros([len(self.gene_list),1])
+        
+        # Set up the input vector 
+        if pert_mags is None:
+            pert_mags = np.ones(len(pert_genes))
+        for idx, pert_mag in zip(pert_idx, pert_mags):
+            theta[pert_idx] = pert_mag
+
+        # Compute differential expression vector
+        delta = np.dot(self.A, theta)
+        delta = np.squeeze(np.array(delta))
+        
+        # Add the perturbation magnitude directly for the TF
+        delta = delta + np.squeeze(theta)
+        
+        return delta
+    
+class DNN(torch.nn.Module):
+    """
+    DNN
+    """
+
+    def __init__(self, args):
+        super(DNN, self).__init__()
+        self.num_genes = args['num_genes']
+        hidden_size = args['node_hidden_size']
+        self.pert_w = nn.Linear(self.num_genes, hidden_size)
+        self.gene_w = nn.Linear(self.num_genes, hidden_size)
+        
+        #self.pert_w = MLP([self.num_genes, hidden_size, hidden_size])
+        #self.gene_w = MLP([self.num_genes, hidden_size, hidden_size])
+        self.NN = MLP([hidden_size, self.num_genes], last_layer_act='linear')
+        
+    def forward(self, data):
+        x, batch = data.x, data.batch
+        num_graphs = len(data.batch.unique())
+        
+        gene_base = x[:, 0].reshape(num_graphs, self.num_genes)
+        gene_emb = self.gene_w(gene_base)
+            
+        pert = x[:, 1].reshape(num_graphs, self.num_genes)
+        pert_emb = self.pert_w(pert)
+        base_emb = pert_emb+gene_emb
+        
+        out = self.NN(base_emb) + x[:, 0].reshape(*data.y.shape)
+        #out = self.NN(base_emb)
+        
+        return out
+    
+class GNN_Diffusion(torch.nn.Module):
+    """
+    GNN_Diffusion
+    """
+
+    def __init__(self, args):
+        super(GNN, self).__init__()
+
+        self.num_genes = args['num_genes']
+        hidden_size = args['node_hidden_size']
+        self.num_layers = args['num_of_gnn_layers']
+        self.network_type = args['network_type']
+        
+        self.args = args        
+
+        # perturbation positional embedding added only to the perturbed genes
+        self.pert_w = nn.Linear(1, hidden_size)
+
+        # gene basal embedding - encoding gene expression
+        self.gene_basal_w = nn.Linear(1, hidden_size)
+        
+        self.G_coexpress = args['G_coexpress'].to(args['device'])
+        self.G_coexpress_weight = args['G_coexpress_weight'].to(args['device'])
+        
+        if self.model_backend == 'GAT':
+            self.layers_emb_pos = GATConv(hidden_size, hidden_size, heads = 1)
+        elif self.model_backend == 'GCN':
+            self.layers_emb_pos = GCNConv(hidden_size, hidden_size)
+        elif self.model_backend == 'SGC':
+            self.layers_emb_pos = SGConv(hidden_size, hidden_size, 1)
+
+        self.recovery_w = MLP([hidden_size, hidden_size*2, hidden_size, 1], last_layer_act='linear')
+           
+
+    def forward(self, data):
+        x, batch = data.x, data.batch
+        num_graphs = len(data.batch.unique())
+        
+        ## add the gene expression positional embedding
+        gene_base = x[:, 0].reshape(-1,1)
+        gene_emb = self.gene_basal_w(gene_base)
+            
+        pert = x[:, 1].reshape(-1,1)
+        pert_emb = self.pert_w(pert)
+        base_emb = pert_emb+gene_emb
+        
+        for idx in range(self.num_layers):
+            base_emb = self.layers_emb_pos(base_emb, self.G_coexpress, self.G_coexpress_weight)
+            if idx < len(self.layers_emb_pos) - 1:
+                base_emb = base_emb.relu()
+        
+        #out = self.recovery_w(base_emb) + x[:, 0].reshape(-1,1)
+        out = self.recovery_w(base_emb) + x[:, 0].reshape(-1,1)
+        out = torch.split(torch.flatten(out), self.num_genes)
+
+        return torch.stack(out)
+    
+class GNN(torch.nn.Module):
+    """
+    GNN
+    """
+
+    def __init__(self, args):
+        super(GNN, self).__init__()
+
+        self.num_genes = args['num_genes']
+        hidden_size = args['node_hidden_size']
+        self.num_layers = args['num_of_gnn_layers']
+        self.network_type = args['network_type']
+        self.num_layers_gene_pos = args['gene_sim_pos_emb_num_layers']
+        self.model_backend = args['model_backend']
+        
+        self.args = args        
+
+        # perturbation positional embedding added only to the perturbed genes
+        self.pert_w = nn.Linear(1, hidden_size)
+
+        # gene basal embedding - encoding gene expression
+        self.gene_basal_w = nn.Linear(1, hidden_size)
+        
+        self.G_coexpress = args['G_coexpress'].to(args['device'])
+        self.G_coexpress_weight = args['G_coexpress_weight'].to(args['device'])
+
+        #self.emb_pos = nn.Embedding(self.num_genes, hidden_size, max_norm=True)
+        self.emb_pos = nn.Parameter(torch.Tensor(self.num_genes, hidden_size), requires_grad = False)
+        nn.init.xavier_uniform_(self.emb_pos)
+        
+        self.layers_emb_pos = torch.nn.ModuleList()
+        
+        for i in range(1, self.num_layers_gene_pos + 1):
+            if self.model_backend == 'GAT':
+                self.layers_emb_pos.append(GATConv(hidden_size, hidden_size, heads = 1))
+            elif self.model_backend == 'GCN':
+                self.layers_emb_pos.append(GCNConv(hidden_size, hidden_size))
+            elif self.model_backend == 'SGC':
+                self.layers_emb_pos.append(SGConv(hidden_size, hidden_size, 1))
+        
+        self.recovery_w = MLP([hidden_size, hidden_size*2, hidden_size, 1], last_layer_act='linear')
+           
+
+    def forward(self, data):
+        x, batch = data.x, data.batch
+        num_graphs = len(data.batch.unique())
+        
+        ## add the gene expression positional embedding
+        #pos_emb = self.emb_pos(torch.LongTensor(list(range(self.num_genes))).repeat(num_graphs, ).to(self.args['device']))
+        
+        gene_base = x[:, 0].reshape(-1,1)
+        gene_emb = self.gene_basal_w(gene_base) + self.emb_pos.repeat(num_graphs, 1).to(self.args['device'])
+            
+        pert = x[:, 1].reshape(-1,1)
+        pert_emb = self.pert_w(pert)
+        base_emb = pert_emb+gene_emb
+        
+        for idx, layer in enumerate(self.layers_emb_pos):
+            base_emb = layer(base_emb, self.G_coexpress, self.G_coexpress_weight)
+            if idx < len(self.layers_emb_pos) - 1:
+                base_emb = base_emb.relu()
+        
+        #out = self.recovery_w(base_emb) + x[:, 0].reshape(-1,1)
+        out = self.recovery_w(base_emb) + x[:, 0].reshape(-1,1)
+        out = torch.split(torch.flatten(out), self.num_genes)
+
+        return torch.stack(out)         
+        
+
 class No_Perturb(torch.nn.Module):
     """
     No Perturbation
@@ -67,7 +309,9 @@ class PertNet(torch.nn.Module):
         self.indv_out_layer = args['indv_out_layer']
         self.indv_out_hidden_size = args['indv_out_hidden_size']
         self.num_mlp_layers = args['num_mlp_layers']
-
+        self.indv_out_layer_uncertainty = args['indv_out_layer_uncertainty']
+        self.add_gene_expression = args['add_gene_expression']
+        
         # gene structure
         self.gene_sim_pos_emb = args['gene_sim_pos_emb']
         self.num_layers_gene_pos = args['gene_sim_pos_emb_num_layers']
@@ -112,14 +356,15 @@ class PertNet(torch.nn.Module):
 
 
         if self.indv_out_layer:
-            self.recovery_w = MLP([hidden_size, hidden_size*2, hidden_size], last_layer_act='linear')
-            #self.recovery_w = MLP([hidden_size, hidden_size], last_layer_act='ReLU')
-            self.indv_w1 = nn.Parameter(torch.rand(self.num_genes,
-                                                   hidden_size, 1))
-            self.indv_b1 = nn.Parameter(torch.rand(self.num_genes, 1))
-            self.act = nn.ReLU()
-
+            
             if self.cross_gene_MLP:
+                self.recovery_w = MLP([hidden_size, hidden_size*2, hidden_size], last_layer_act='linear')
+                #self.recovery_w = MLP([hidden_size, hidden_size], last_layer_act='ReLU')
+                self.indv_w1 = nn.Parameter(torch.rand(self.num_genes,
+                                                       hidden_size, 1))
+                self.indv_b1 = nn.Parameter(torch.rand(self.num_genes, 1))
+                self.act = nn.ReLU()
+                
                 # Cross gene state encoder
                 self.cross_gene_state = MLP([self.num_genes, hidden_size,
                                              hidden_size])
@@ -128,30 +373,22 @@ class PertNet(torch.nn.Module):
                 self.indv_w2 = nn.Parameter(torch.rand(1, self.num_genes,
                                                        hidden_size+1))
                 self.indv_b2 = nn.Parameter(torch.rand(1, self.num_genes))
-
-                # Second layer parameters
-                #self.indv_w3 = nn.Parameter(torch.rand(1, 8, self.num_genes))
-                #self.indv_b3 = nn.Parameter(torch.rand(1, self.num_genes))
-
                 nn.init.xavier_normal_(self.indv_w2)
                 nn.init.xavier_normal_(self.indv_b2)
-
-            #self.indv_w2 = nn.Parameter(torch.rand(hidden_size, hidden_size,1))
-            #self.indv_b2 = nn.Parameter(torch.rand(hidden_size, 1))
-            
-            #self.indv_w_out = nn.Parameter(torch.rand(self.num_genes, hidden_size, 1))
-            #self.indv_b_out = nn.Parameter(torch.rand(self.num_genes, 1))
-            
-            nn.init.xavier_normal_(self.indv_w1)
-            nn.init.xavier_normal_(self.indv_b1)
+                
+                nn.init.xavier_normal_(self.indv_w1)
+                nn.init.xavier_normal_(self.indv_b1)
+                
+            else:
+                self.recovery_w = MLP([hidden_size, hidden_size*2, hidden_size, self.indv_out_hidden_size], last_layer_act='linear')
+                self.indv_w1 = nn.Parameter(torch.rand(self.num_genes, self.indv_out_hidden_size, 1))
+                self.indv_b1 = nn.Parameter(torch.rand(self.num_genes, 1))
 
             nn.init.kaiming_uniform_(self.indv_w1, a=math.sqrt(5))
             fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.indv_w1)
             bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
             nn.init.uniform_(self.indv_b1, -bound, bound)
 
-            #nn.init.xavier_normal_(self.indv_w_out)
-            #nn.init.xavier_normal_(self.indv_b_out)
         else:
             self.recovery_w = MLP([hidden_size, hidden_size*2, hidden_size, 1], last_layer_act='linear')
 
@@ -203,6 +440,18 @@ class PertNet(torch.nn.Module):
         if self.uncertainty:
             self.uncertainty_w = MLP([hidden_size, hidden_size*2, hidden_size, 1], last_layer_act='linear')
         
+        if self.indv_out_layer_uncertainty:	
+            self.uncertainty_w = MLP([hidden_size, hidden_size*2, hidden_size, self.indv_out_hidden_size], last_layer_act='linear')
+            self.indv_w1_unc = nn.Parameter(torch.rand(self.num_genes, self.indv_out_hidden_size, 1))
+            self.indv_b1_unc = nn.Parameter(torch.rand(self.num_genes, 1))	
+            nn.init.kaiming_uniform_(self.indv_w1_unc, a=math.sqrt(5))	
+            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.indv_w1_unc)	
+            bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0	
+            nn.init.uniform_(self.indv_b1_unc, -bound, bound)	
+
+        else:	
+            self.uncertainty_w = MLP([hidden_size, hidden_size*2, hidden_size, 1], last_layer_act='linear')
+
 
     def forward(self, data):
         x, batch = data.x, data.batch
@@ -213,7 +462,16 @@ class PertNet(torch.nn.Module):
         emb = self.bn_emb(emb)
         base_emb = self.emb_trans(emb)
         #base_emb = self.bn_base_emb(base_emb)
-
+        
+        if self.add_gene_expression:	
+            ## add the gene expression positional embedding	
+            gene_base = x[:, 0].reshape(-1,1)	
+            gene_emb = self.gene_basal_w(gene_base)	
+            combined = gene_emb+base_emb	
+            combined = self.bn_gene_base_trans(combined)	
+            base_emb = self.gene_base_trans_w(combined)	
+            base_emb = self.bn_gene_base(base_emb)
+        
         if self.gene_sim_pos_emb:
             pos_emb = self.emb_pos(torch.LongTensor(list(range(self.num_genes))).repeat(num_graphs, ).to(self.args['device']))
             for idx, layer in enumerate(self.layers_emb_pos):
@@ -341,9 +599,20 @@ class PertNet(torch.nn.Module):
 
         ## uncertainty head
         if self.uncertainty:
-            out_logvar = self.uncertainty_w(base_emb)
-            out_logvar = torch.split(torch.flatten(out_logvar), self.num_genes)
-            return torch.stack(out), torch.stack(out_logvar), func_out
+            
+            if self.indv_out_layer_uncertainty:
+                out_logvar = self.uncertainty_w(base_emb)
+                out_logvar = out_logvar.reshape(num_graphs, self.num_genes, -1)
+                out_logvar = out_logvar.unsqueeze(-1) * self.indv_w1_unc
+                w = torch.sum(out_logvar, axis = 2)
+                out_logvar = w + self.indv_b1_unc
+                out_logvar = out_logvar.reshape(num_graphs * self.num_genes, -1) + x[:, 0].reshape(-1,1)
+                out_logvar = torch.split(torch.flatten(out_logvar), self.num_genes)	
+                return torch.stack(out), torch.stack(out_logvar), func_out
+            else:
+                out_logvar = self.uncertainty_w(base_emb)
+                out_logvar = torch.split(torch.flatten(out_logvar), self.num_genes)
+                return torch.stack(out), torch.stack(out_logvar), func_out
         
         return torch.stack(out), func_out
         

@@ -30,7 +30,11 @@ class GeneSimNetwork():
         edge_index_ = [(node_map[e[0]], node_map[e[1]]) for e in
                       self.G.edges]
         self.edge_index = torch.tensor(edge_index_, dtype=torch.long).T
-        self.edge_weight = torch.Tensor(self.edge_list['importance'].values)
+        #self.edge_weight = torch.Tensor(self.edge_list['importance'].values)
+        
+        edge_attr = nx.get_edge_attributes(self.G, 'importance') 
+        importance = np.array([edge_attr[e] for e in self.G.edges])
+        self.edge_weight = torch.Tensor(importance)
 
 class GeneCoexpressNetwork():
     def __init__(self, fname, gene_list, node_map):
@@ -214,7 +218,7 @@ class PertDataloader():
             print("Creating dataloaders....")
             # Set up dataloaders
             train_loader = DataLoader(cell_graphs['train'],
-                                batch_size=self.args['batch_size'], shuffle=True)
+                                batch_size=self.args['batch_size'], shuffle=True, drop_last = True)
             val_loader = DataLoader(cell_graphs['val'],
                                 batch_size=self.args['batch_size'], shuffle=True)
             test_loader = DataLoader(cell_graphs['test'],

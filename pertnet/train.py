@@ -11,7 +11,7 @@ import torch.optim as optim
 import torch.nn as nn
 from torch.optim.lr_scheduler import StepLR
 
-from model import No_Perturb, PertNet
+from model import No_Perturb, PertNet, GNN, DNN
 from data import PertDataloader, GeneSimNetwork, GeneCoexpressNetwork
 from inference import evaluate, compute_metrics, deeper_analysis, \
     GI_subgroup, non_dropout_analysis, non_zero_analysis, compute_synergy_loss
@@ -172,15 +172,15 @@ def trainer(args):
             wandb.config.update(args)
 
     if args['dataset'] == 'Norman2019':
-        data_path = '/dfs/project/perturb-gnn/datasets/Norman2019/Norman2019_hvg+perts_more_de.h5ad'
+        data_path = '/lfs/local/0/kexinh/dataset/perturb_gnn/Norman2019_hvg+perts_more_de.h5ad'
     elif args['dataset'] == 'Norman2019_umi':
-        data_path = '/dfs/project/perturb-gnn/datasets/Norman2019/Norman2019_hi_umi+hvg.h5ad'
+        data_path = '/lfs/local/0/kexinh/dataset/perturb_gnn/Norman2019_hi_umi+hvg.h5ad'
     elif args['dataset'] == 'Norman2019_umi_all_poss':
         data_path = '/dfs/project/perturb-gnn/datasets/Norman2019/Norman2019_hi_umi+hvg_all_poss.h5ad'
     elif args['dataset'] == 'Norman2019_GI':
         data_path = '/dfs/project/perturb-gnn/datasets/Norman2019/Norman2019_all_possible_train1.h5ad'
     elif args['dataset'] == 'Adamson2016':
-        data_path = '/dfs/project/perturb-gnn/datasets/Adamson2016_hvg+perts_more_de_in_genes.h5ad'
+        data_path = '/lfs/local/0/kexinh/dataset/perturb_gnn/Adamson2016_hvg+perts_more_de_in_genes.h5ad'
     elif args['dataset'] == 'Dixit2016':
         data_path = '/dfs/project/perturb-gnn/datasets/Dixit2016_hvg+perts_more_de.h5ad'
     elif args['dataset'] == 'Norman2019_Adamson2016':
@@ -212,20 +212,20 @@ def trainer(args):
         
         for i in ['string_ppi', 'co-expression_train', 'gene_ontology']:
             
-            edge_list = get_similarity_network(i, args['dataset'], adata, pertdl, args, args['sim_gnn_gene_threshold'], args['sim_gnn_gene_k'])        
+            edge_list = get_similarity_network(i, args['dataset'], adata, pertdl, args, args['sim_gnn_gene_threshold'], args['sim_gnn_gene_k'],  args['network_randomize_pert'])        
             sim_network = GeneSimNetwork(edge_list, args['gene_list'], node_map = pertdl.node_map)
             args['G_sim_' + i] = sim_network.edge_index
             args['G_sim_weight_' + i] = sim_network.edge_weight
     
     else:
-        edge_list = get_similarity_network(args['network_type'], args['dataset'], adata, pertdl, args, args['sim_gnn_gene_threshold'], args['sim_gnn_gene_k'])
+        edge_list = get_similarity_network(args['network_type'], args['dataset'], adata, pertdl, args, args['sim_gnn_gene_threshold'], args['sim_gnn_gene_k'],  args['network_randomize_pert'])
     
         sim_network = GeneSimNetwork(edge_list, args['gene_list'], node_map = pertdl.node_map)
         args['G_sim'] = sim_network.edge_index
         args['G_sim_weight'] = sim_network.edge_weight
         
-    if args['gene_sim_pos_emb']:
-        edge_list = get_similarity_network(args['network_type_gene'], args['dataset'], adata, pertdl, args, args['sim_gnn_gene_threshold'], args['sim_gnn_gene_k'])
+    if args['gene_sim_pos_emb'] or args['model'] == 'GNN':
+        edge_list = get_similarity_network(args['network_type_gene'], args['dataset'], adata, pertdl, args, args['sim_gnn_gene_threshold'], args['sim_gnn_gene_k'],  args['network_randomize_pert'])
         sim_network = GeneSimNetwork(edge_list, args['gene_list'], node_map = pertdl.node_map)
 
         args['G_coexpress'] = sim_network.edge_index
@@ -251,7 +251,10 @@ def trainer(args):
         model = PertNet(args)
     elif args['model'] == 'No_Perturb':
         model = No_Perturb()
-    
+    elif args['model'] == 'GNN':
+        model = GNN(args)
+    elif args['model'] == 'DNN':
+        model = DNN(args)
     
     if args['model'] == 'No_Perturb': 
         best_model = model
@@ -385,7 +388,7 @@ def trainer(args):
             if args['wandb']:
                 wandb.log({'test_' + i + '_' + m: j[m]})
     
-    if '_' in args['dataset']:
+    if ('_' in args['dataset']) and (args['dataset'].split('_')[1] == 'Adamson2016'):
         print('Starting Testing on Cross Dataset....')
         ## cross dataset evaluation
         if args['dataset'].split('_')[1] == 'Adamson2016':
@@ -415,8 +418,7 @@ def trainer(args):
                            #'test_de_macro_'+m: test_metrics[m + '_de_macro'],
                            #'test_macro_'+m: test_metrics[m + '_macro'],                       
                           })
-        if args['deeper_analysis']:
-            out = deeper_analysis(adata_cross, test_res)
+        out = deeper_analysis(adata_cross, test_res)
 
         metrics = ['frac_in_range', 'frac_in_range_45_55', 'frac_in_range_40_60', 'frac_in_range_25_75', 'mean_sigma', 'std_sigma', 'frac_sigma_below_1', 'frac_sigma_below_2', 'pearson_delta',
                    'pearson_delta_de', 'fold_change_gap_all', 'pearson_delta_top200_hvg', 'fold_change_gap_upreg_3', 
@@ -488,7 +490,7 @@ def parse_arguments():
     # model arguments
     parser.add_argument('--node_hidden_size', type=int, default=64,
                         help='hidden dimension for GNN')    
-    parser.add_argument('--model', choices = ['No_Perturb', 'PertNet'], 
+    parser.add_argument('--model', choices = ['No_Perturb', 'PertNet', 'GNN', 'DNN'], 
                         type = str, default = 'PertNet', help='model name')
     parser.add_argument('--num_of_gnn_layers', type=int, default=1)    
     
@@ -506,8 +508,8 @@ def parse_arguments():
                         type = str, default = 'SGC', help='model name')  
     parser.add_argument('--indv_out_hidden_size', type=int, default=4)    
     parser.add_argument('--num_mlp_layers', type=int, default=3)    
-
-
+    parser.add_argument('--network_randomize_pert', default=False, action='store_true')	
+    parser.add_argument('--network_randomize_gene', default=False, action='store_true')
 
     parser.add_argument('--sim_gnn_gene_k', type=int, default=5)    
     parser.add_argument('--sim_gnn_gene_threshold', type=float, default=0.4)  
@@ -515,13 +517,17 @@ def parse_arguments():
                         choices = ['co-expression_train', 'gene_ontology', 'string_ppi', 'all'])
     parser.add_argument('--indv_out_layer', default=True, action='store_true')
     parser.add_argument('--cross_gene_MLP', default=False, action='store_true')
+    
+    parser.add_argument('--network_type_gene', default = 'co-expression_train', type=str, choices = ['co-expression_train', 'gene_ontology', 'string_ppi', 'all'])
+    parser.add_argument('--indv_out_layer_uncertainty', default=False, action='store_true')
+    parser.add_argument('--add_gene_expression', default=False, action='store_true')
 
     # loss
     parser.add_argument('--pert_loss_wt', type=int, default=1,
                         help='weights for perturbed cells compared to control cells')
     parser.add_argument('--loss_type', type=str, default='macro', choices = ['macro', 'micro'],
                         help='micro averaged or not')
-    parser.add_argument('--loss_mode', choices = ['l2', 'l3'], type = str, default = 'l3')
+    parser.add_argument('--loss_mode', choices = ['l2', 'l3', 'weight_y'], type = str, default = 'l3')
     parser.add_argument('--focal_gamma', type=int, default=2)    
     parser.add_argument('--loss_direction', default=True, action='store_true')
     parser.add_argument('--direction_lambda', type=float, default=1e-1)    
@@ -534,13 +540,12 @@ def parse_arguments():
                 help='Use wandb or not')
     parser.add_argument('--project_name', type=str, default='pert_gnn',
                         help='project name')
-    parser.add_argument('--entity_name', type=str, default='yroohani',
+    parser.add_argument('--entity_name', type=str, default='kexinhuang',
                         help='entity name')
     parser.add_argument('--exp_name', type=str, default='testing',
                         help='entity name')
     
     # misc
-    parser.add_argument('--deeper_analysis', default=False, action='store_true')
     parser.add_argument('--save_model', default=True, action='store_true')
     return dict(vars(parser.parse_args()))
 
