@@ -572,7 +572,7 @@ class PertNet(torch.nn.Module):
                 # First pass through MLP
                 cross_gene_out = cross_gene_out * self.indv_w2
                 cross_gene_out = torch.sum(cross_gene_out, axis=2)
-                cross_gene_out = cross_gene_out + self.indv_b2
+                out = cross_gene_out + self.indv_b2
 
                 ## Two layer MLP (doesn't work)
                 #cross_gene_out = cross_gene_out.unsqueeze(1) * self.indv_w2
