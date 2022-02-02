@@ -103,17 +103,7 @@ def train(model, train_loader, val_loader, args, ctrl_expression, dict_filter, d
         val_res = evaluate(val_loader, model, args)
         train_metrics, _ = compute_metrics(train_res)
         val_metrics, _ = compute_metrics(val_res)
-
-        # Synergy loss
-        high_umi_idx = get_high_umi_idx(args['gene_list'])
-        mean_control = get_mean_ctrl(adata)
-        train_metrics['synergy_loss'] = compute_synergy_loss(train_res, mean_control,
-                                            high_umi_idx)
-        ## TODO this shouuld be val only and not train_val
-        val_metrics['synergy_loss'] = compute_synergy_loss(combine_res(train_res,
-                                        val_res),mean_control, high_umi_idx)
-        val_metrics['synergy_loss'] -= train_metrics['synergy_loss']
-
+        
         # Print epoch performance
         log = "Epoch {}: Train: {:.4f} " \
               "Validation: {:.4f}. " \
@@ -129,8 +119,7 @@ def train(model, train_loader, val_loader, args, ctrl_expression, dict_filter, d
                            'val_'+m: val_metrics[m],
                            'train_de_' + m: train_metrics[m + '_de'],
                            'val_de_'+m: val_metrics[m + '_de']})
-            m = 'synergy_loss'
-            wandb.log({'train_' + m: train_metrics[m]})
+            
             if args['func_readout']:
                 m = 'func_mse'
                 wandb.log({'train_' + m: train_metrics[m],
@@ -174,7 +163,7 @@ def trainer(args):
     if args['dataset'] == 'Norman2019':
         data_path = '/dfs/project/perturb-gnn/datasets/Norman2019/Norman2019_hvg+perts_more_de.h5ad'
     elif args['dataset'] == 'Norman2019_umi':
-        data_path = '/dfs/project/perturb-gnn/datasets/Norman2019/Norman2019_hi_umi+hvg.h5ad'
+        data_path = '/lfs/local/0/kexinh/dataset/perturb_gnn/Norman2019_hi_umi+hvg.h5ad'
     elif args['dataset'] == 'Norman2019_umi_all_poss':
         data_path = '/dfs/project/perturb-gnn/datasets/Norman2019/Norman2019_hi_umi+hvg_all_poss.h5ad'
     elif args['dataset'] == 'Norman2019_GI':
@@ -269,10 +258,10 @@ def trainer(args):
         np.save('./saved_args/'+ args['exp_name'], args)
         torch.save(best_model, './saved_models/' +args['exp_name'])    
     
-    print('Start testing....')
-    test_res = evaluate(pertdl.loaders['test_loader'],best_model, args)
+    print('Start testing....')    
     
-    test_metrics, test_pert_res = compute_metrics(test_res)
+    test_res = evaluate(pertdl.loaders['test_loader'],best_model, args)    
+    test_metrics, test_pert_res = compute_metrics(test_res)    
     
     log = "Final best performing model: Test_DE: {:.4f}"
     print(log.format(test_metrics['mse_de']))
@@ -290,7 +279,7 @@ def trainer(args):
     out_non_zero = non_zero_analysis(adata, test_res)
     GI_out = GI_subgroup(out)
     GI_out_non_dropout = GI_subgroup(out_non_dropout)
-    GI_out_non_zero = GI_subgroup(out_non_zero)
+    GI_out_non_zero = GI_subgroup(out_non_zero)      
     
     metrics = ['frac_in_range', 'frac_in_range_45_55', 'frac_in_range_40_60', 'frac_in_range_25_75', 'mean_sigma', 'std_sigma', 'frac_sigma_below_1', 'frac_sigma_below_2', 'pearson_delta',
                'pearson_delta_de', 'fold_change_gap_all', 'pearson_delta_top200_hvg', 'fold_change_gap_upreg_3', 
@@ -388,6 +377,33 @@ def trainer(args):
             if args['wandb']:
                 wandb.log({'test_' + i + '_' + m: j[m]})
     
+    
+    if 'umi' in args['dataset']:
+        
+        train_res = evaluate(pertdl.loaders['train_loader'], best_model, args)
+        val_res = evaluate(pertdl.loaders['val_loader'], best_model, args)
+        
+        high_umi_idx = get_high_umi_idx(args['gene_list'])
+        mean_control = get_mean_ctrl(adata)
+        test_synergy_loss = {}
+        
+        for subtype in ['SYNERGY_SIMILAR_PHENO', 'SYNERGY_DISSIMILAR_PHENO', 'SUPPRESSOR', 'POTENTIATION', 'ADDITIVE']:
+
+            test_synergy_loss['train_' + subtype + '_loss'] = compute_synergy_loss(train_res, mean_control,
+                                                high_umi_idx, subtype = subtype)
+            test_synergy_loss['val_' + subtype + '_loss'] = compute_synergy_loss(combine_res(train_res, val_res), mean_control,
+                                                high_umi_idx, subtype = subtype) - test_synergy_loss['train_' + subtype + '_loss']
+            test_synergy_loss['test_' + subtype + '_loss'] = compute_synergy_loss(combine_res(train_res, test_res), mean_control,
+                                                high_umi_idx, subtype = subtype) - test_synergy_loss['train_' + subtype + '_loss']
+            
+            if args['wandb']:
+                wandb.log({'test_' + subtype + '_loss': test_synergy_loss['test_' + subtype + '_loss']})
+                wandb.log({'train_' + subtype + '_loss': test_synergy_loss['train_' + subtype + '_loss']})
+                wandb.log({'val_' + subtype + '_loss': test_synergy_loss['val_' + subtype + '_loss']})
+                
+                wandb.log({'All_' + subtype + '_loss': test_synergy_loss['test_' + subtype + '_loss'] + test_synergy_loss['train_' + subtype + '_loss'] + test_synergy_loss['val_' + subtype + '_loss']})
+        
+                
     if ('_' in args['dataset']) and (args['dataset'].split('_')[1] == 'Adamson2016'):
         print('Starting Testing on Cross Dataset....')
         ## cross dataset evaluation

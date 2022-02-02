@@ -260,7 +260,6 @@ def get_test_set_results_seen2(res, sel_GI_type):
     out = {}
     for key in res:
         out[key] = res[key][pred_idx]
-
     return out
 
 ## Synergy loss calculation functions
@@ -303,7 +302,11 @@ def get_coeffs_synergy(singles_expr, double_expr):
                                       random_state=1000)
     X = singles_expr
     y = double_expr
-    results['ts'].fit(X, y.ravel())
+    try:
+        results['ts'].fit(X, y.ravel())
+    except:
+        print(X)
+        print(y)
     results['c1'] = results['ts'].coef_[0]
     results['c2'] = results['ts'].coef_[1]
     results['mag'] = np.sqrt((results['c1'] ** 2 + results['c2'] ** 2))

@@ -189,8 +189,8 @@ def compute_metrics(results, gene_idx=None):
     return metrics, metrics_pert
 
 
-def compute_synergy_loss(results, mean_control, high_umi_idx):
-    pred_res = utils.get_test_set_results_seen2(results, 'POTENTIATION')
+def compute_synergy_loss(results, mean_control, high_umi_idx, subtype = 'POTENTIATION'):
+    pred_res = utils.get_test_set_results_seen2(results, subtype)
     all_perts = np.unique(results['pert_cat'])
     linear_params = utils.get_linear_params(pred_res, high_umi_idx,
                                             mean_control,all_perts)
