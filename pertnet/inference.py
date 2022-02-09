@@ -197,7 +197,10 @@ def compute_synergy_loss(results, mean_control, high_umi_idx, subtype = 'POTENTI
     synergy_loss = np.sum([np.abs(linear_params[k]['pred']['mag']
                                - linear_params[k]['truth']['mag']) for k in
                                 linear_params])
-    return synergy_loss
+    
+    mag = np.sum([np.abs(linear_params[k]['pred']['mag']) for k in
+                                linear_params])
+    return synergy_loss, mag
 
 
 def non_zero_analysis(adata, test_res):

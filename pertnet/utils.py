@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import TheilSenRegressor
 from inference import GIs
+import torch.nn as nn
 
 ## helper function
 def parse_single_pert(i):
@@ -153,8 +154,6 @@ def uncertainty_loss_fct(pred, logvar, y, perts, loss_mode = 'l2', gamma = 1, re
             if loss_mode == 'l2':
                 losses += torch.sum(0.5 * torch.exp(-logvar_p) * (pred_p - y_p)**2 + 0.5 * logvar_p)/pred_p.shape[0]/pred_p.shape[1]
             elif loss_mode == 'l3':
-                #losses += torch.sum(0.5 * torch.exp(-logvar_p) * (pred_p - y_p)**(2 + gamma) + 0.01 * logvar_p)/pred_p.shape[0]/pred_p.shape[1]
-                #losses += torch.sum((pred_p - y_p)**(2 + gamma) + 0.1 * torch.exp(-logvar_p) * (pred_p - y_p)**(2 + gamma) + 0.1 * logvar_p)/pred_p.shape[0]/pred_p.shape[1]
                 losses += reg_core * torch.sum((pred_p - y_p)**(2 + gamma) + reg * torch.exp(-logvar_p) * (pred_p - y_p)**(2 + gamma))/pred_p.shape[0]/pred_p.shape[1]
         
         if loss_mode == 'l2':
@@ -208,7 +207,10 @@ def loss_fct(pred, y, perts, weight=1, loss_type = 'macro', loss_mode = 'l2', ga
                         losses += torch.sum((pred_p - y_p)**2)/pred_p.shape[0]/pred_p.shape[1]
                     elif loss_mode == 'l3':
                         losses += torch.sum((pred_p - y_p)**(2 + gamma))/pred_p.shape[0]/pred_p.shape[1]
-
+                    elif loss_mode == 'l1':
+                        loss_fct = nn.L1Loss()
+                        losses += loss_fct(pred_p, y_p)
+                        
                     if loss_direction:
                         if (p!= 'ctrl') and filter_status:
                             losses += torch.sum(direction_lambda * (torch.sign(y_p - ctrl[retain_idx]) - torch.sign(pred_p - ctrl[retain_idx]))**2)/pred_p.shape[0]/pred_p.shape[1]

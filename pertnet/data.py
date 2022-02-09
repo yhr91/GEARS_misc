@@ -592,7 +592,8 @@ class DataSplitter():
                 if test_perts is None:
                     test_perts = np.random.choice(combo_perts,
                                      int(len(combo_perts) * test_size))       
-        
+                else:
+                    test_perts = np.array(test_perts)
         train_perts = [p for p in pert_list if (p not in test_perts)
                                         and (p not in hold_out)]
         return train_perts, test_perts

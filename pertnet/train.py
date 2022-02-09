@@ -1,7 +1,7 @@
 from copy import deepcopy
 import argparse
 from time import time
-import sys
+import sys, os
 
 import scanpy as sc
 import numpy as np
@@ -164,6 +164,8 @@ def trainer(args):
         data_path = '/dfs/project/perturb-gnn/datasets/Norman2019/Norman2019_hvg+perts_more_de.h5ad'
     elif args['dataset'] == 'Norman2019_umi':
         data_path = '/lfs/local/0/kexinh/dataset/perturb_gnn/Norman2019_hi_umi+hvg.h5ad'
+        if not os.path.exists(data_path):
+            data_path = '/dfs/project/perturb-gnn/datasets/Norman2019/Norman2019_hi_umi+hvg.h5ad'
     elif args['dataset'] == 'Norman2019_umi_all_poss':
         data_path = '/dfs/project/perturb-gnn/datasets/Norman2019/Norman2019_hi_umi+hvg_all_poss.h5ad'
     elif args['dataset'] == 'Norman2019_GI':
@@ -378,7 +380,7 @@ def trainer(args):
                 wandb.log({'test_' + i + '_' + m: j[m]})
     
     
-    if 'umi' in args['dataset']:
+    if 'Norman2019' in args['dataset']:
         
         train_res = evaluate(pertdl.loaders['train_loader'], best_model, args)
         val_res = evaluate(pertdl.loaders['val_loader'], best_model, args)
@@ -389,20 +391,23 @@ def trainer(args):
         
         for subtype in ['SYNERGY_SIMILAR_PHENO', 'SYNERGY_DISSIMILAR_PHENO', 'SUPPRESSOR', 'POTENTIATION', 'ADDITIVE']:
 
-            test_synergy_loss['train_' + subtype + '_loss'] = compute_synergy_loss(train_res, mean_control,
+            train_loss, train_mag = compute_synergy_loss(train_res, mean_control,
                                                 high_umi_idx, subtype = subtype)
-            test_synergy_loss['val_' + subtype + '_loss'] = compute_synergy_loss(combine_res(train_res, val_res), mean_control,
-                                                high_umi_idx, subtype = subtype) - test_synergy_loss['train_' + subtype + '_loss']
-            test_synergy_loss['test_' + subtype + '_loss'] = compute_synergy_loss(combine_res(train_res, test_res), mean_control,
-                                                high_umi_idx, subtype = subtype) - test_synergy_loss['train_' + subtype + '_loss']
+            
+            val_train_loss, val_train_mag = compute_synergy_loss(combine_res(train_res, val_res), mean_control,
+                                                high_umi_idx, subtype = subtype)
+            
+            test_train_loss, test_train_mag = compute_synergy_loss(combine_res(train_res, test_res), mean_control,
+                                                high_umi_idx, subtype = subtype) 
             
             if args['wandb']:
-                wandb.log({'test_' + subtype + '_loss': test_synergy_loss['test_' + subtype + '_loss']})
-                wandb.log({'train_' + subtype + '_loss': test_synergy_loss['train_' + subtype + '_loss']})
-                wandb.log({'val_' + subtype + '_loss': test_synergy_loss['val_' + subtype + '_loss']})
-                
-                wandb.log({'All_' + subtype + '_loss': test_synergy_loss['test_' + subtype + '_loss'] + test_synergy_loss['train_' + subtype + '_loss'] + test_synergy_loss['val_' + subtype + '_loss']})
-        
+                wandb.log({'test_' + subtype + '_loss': test_train_loss - train_loss})
+                wandb.log({'train_' + subtype + '_loss': train_loss})
+                wandb.log({'val_' + subtype + '_loss': val_train_loss - train_loss})
+
+                wandb.log({'test_' + subtype + '_pred_mag': test_train_mag - train_mag})
+                wandb.log({'val_' + subtype + '_pred_mag': val_train_mag - train_mag})
+                wandb.log({'train_' + subtype + '_pred_mag': train_mag})
                 
     if ('_' in args['dataset']) and (args['dataset'].split('_')[1] == 'Adamson2016'):
         print('Starting Testing on Cross Dataset....')
@@ -533,17 +538,29 @@ def parse_arguments():
                         choices = ['co-expression_train', 'gene_ontology', 'string_ppi', 'all'])
     parser.add_argument('--indv_out_layer', default=True, action='store_true')
     parser.add_argument('--cross_gene_MLP', default=False, action='store_true')
+    parser.add_argument('--cross_gene_decoder', default='na', choices = ['mlp', 'skip-connect', 'skip-connect-mlp'], type=str)
     
     parser.add_argument('--network_type_gene', default = 'co-expression_train', type=str, choices = ['co-expression_train', 'gene_ontology', 'string_ppi', 'all'])
     parser.add_argument('--indv_out_layer_uncertainty', default=False, action='store_true')
     parser.add_argument('--add_gene_expression', default=False, action='store_true')
-
+    parser.add_argument('--post_coexpress', default=False, action='store_true')
+    parser.add_argument('--mlp_pert_fuse', default=False, action='store_true')
+    parser.add_argument('--set_self_attention', default=False, action='store_true')
+    parser.add_argument('--set_self_attention_num_head', default=4, type = int)
+    parser.add_argument('--set_self_attention_layernorm', default=False, action='store_true')
+    parser.add_argument('--set_self_attention_agg', choices=['sum', 'weight_ori_emb', 'weight_post_emb'], type = str)
+    parser.add_argument('--set_self_attention_post_mlp', default=False, action='store_true')
+    parser.add_argument('--cg_mlp', choices=['baseline', 'small', 'deep', 'wide'], default = 'baseline', type = str)
+    parser.add_argument('--pert_fuse_linear_to_mlp', default=False, action='store_true')
+    parser.add_argument('--de_drop', default=False, action='store_true')
+    parser.add_argument('--add_gene_expression_before_cross_gene', default=False, action='store_true')
+    
     # loss
     parser.add_argument('--pert_loss_wt', type=int, default=1,
                         help='weights for perturbed cells compared to control cells')
     parser.add_argument('--loss_type', type=str, default='macro', choices = ['macro', 'micro'],
                         help='micro averaged or not')
-    parser.add_argument('--loss_mode', choices = ['l2', 'l3', 'weight_y'], type = str, default = 'l3')
+    parser.add_argument('--loss_mode', choices = ['l1', 'l2', 'l3', 'weight_y'], type = str, default = 'l3')
     parser.add_argument('--focal_gamma', type=int, default=2)    
     parser.add_argument('--loss_direction', default=True, action='store_true')
     parser.add_argument('--direction_lambda', type=float, default=1e-1)    
