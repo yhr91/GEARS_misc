@@ -267,7 +267,7 @@ class No_Perturb(torch.nn.Module):
         x = data.x
         x = x[:, 0].reshape(*data.y.shape)
         
-        return x
+        return x, None
 
 class MLP(torch.nn.Module):
 
@@ -288,7 +288,7 @@ class MLP(torch.nn.Module):
         self.relu = torch.nn.ReLU()
     def forward(self, x):
         if self.activation == "ReLU":
-            return self.relu(x)
+            return self.relu(self.network(x))
         else:
             return self.network(x)
 
@@ -340,7 +340,9 @@ class PertNet(torch.nn.Module):
         self.num_mlp_layers = args['num_mlp_layers']
         self.indv_out_layer_uncertainty = args['indv_out_layer_uncertainty']
         self.add_gene_expression = args['add_gene_expression']
-        
+        self.add_gene_expression_back = args['add_gene_expression_back']
+        self.expression_concat = args['expression_concat']
+        self.expression_no_bn = args['expression_no_bn']
         self.post_coexpress = args['post_coexpress']
         # gene structure
         self.gene_sim_pos_emb = args['gene_sim_pos_emb']
@@ -355,28 +357,56 @@ class PertNet(torch.nn.Module):
         self.pert_w = nn.Linear(1, hidden_size)
 
         # gene basal embedding - encoding gene expression
-        self.gene_basal_w = nn.Linear(1, hidden_size)
+        if not self.expression_concat:
+            self.gene_basal_w = nn.Linear(1, hidden_size)
         
         # gene/globel perturbation embedding dictionary lookup            
         self.gene_emb = nn.Embedding(self.num_genes, hidden_size, max_norm=True)
         self.pert_emb = nn.Embedding(self.num_genes, hidden_size, max_norm=True)
         
         # transformation layer
-        self.emb_trans = MLP([hidden_size, hidden_size, hidden_size], last_layer_act='ReLU')
-        self.pert_base_trans_w = MLP([hidden_size, hidden_size, hidden_size], last_layer_act='ReLU')
-        self.gene_base_trans_w = MLP([hidden_size, hidden_size, hidden_size], last_layer_act='ReLU')
-        self.transform = MLP([hidden_size, hidden_size, hidden_size],
-                             last_layer_act='ReLU')
+        
+        if args['emb_trans_mlp']:
+            self.emb_trans = MLP([hidden_size, hidden_size, hidden_size], last_layer_act='ReLU')
+        else:
+            self.emb_trans = nn.ReLU()
+            
+        if args['pert_base_trans_w_mlp']:
+            self.pert_base_trans_w = MLP([hidden_size, hidden_size, hidden_size], last_layer_act='ReLU')
+        else:
+            self.pert_base_trans_w = nn.ReLU()
+            
+        if self.expression_concat:
+            self.gene_base_trans_w = MLP([hidden_size + 1, hidden_size, hidden_size], last_layer_act='linear')
+        else:
+            if args['gene_base_trans_w_mlp']:
+                self.gene_base_trans_w = MLP([hidden_size, hidden_size, hidden_size], last_layer_act='ReLU')
+            else:
+                self.gene_base_trans_w = nn.ReLU()
+           
+        if args['transform_mlp']:
+            self.transform = MLP([hidden_size, hidden_size, hidden_size], last_layer_act='ReLU')
+        else:
+            self.transform = nn.ReLU()
+        
         self.cross_gene_MLP = args['cross_gene_MLP']
         self.cross_gene_decoder = args['cross_gene_decoder']
         self.de_drop = args['de_drop']
         self.add_gene_expression_before_cross_gene = args['add_gene_expression_before_cross_gene']
         
+        self.mean_control = args['mean_control']
+        if self.mean_control:
+            self.ctrl = args['ctrl']
+            
         if self.gene_sim_pos_emb:
             self.G_coexpress = args['G_coexpress'].to(args['device'])
             self.G_coexpress_weight = args['G_coexpress_weight'].to(args['device'])
+            
+            if args['emb_trans_v2_mlp']:
+                self.emb_trans_v2 = MLP([hidden_size, hidden_size, hidden_size], last_layer_act='ReLU')
+            else:
+                self.emb_trans_v2 = nn.ReLU()
 
-            self.emb_trans_v2 = MLP([hidden_size, hidden_size, hidden_size], last_layer_act='ReLU')
             self.emb_pos = nn.Embedding(self.num_genes, hidden_size, max_norm=True)
             self.layers_emb_pos = torch.nn.ModuleList()
             for i in range(1, self.num_layers_gene_pos + 1):
@@ -485,33 +515,21 @@ class PertNet(torch.nn.Module):
         self.bn_pert_base = nn.BatchNorm1d(hidden_size)
         self.bn_pert_base_trans = nn.BatchNorm1d(hidden_size)
         self.bn_final = nn.BatchNorm1d(hidden_size)
-        self.bn_gene_base_trans = nn.BatchNorm1d(hidden_size)
         self.bn_gene_base = nn.BatchNorm1d(hidden_size)
+        self.bn_gene_base_trans = nn.BatchNorm1d(hidden_size)
+            
         self.bn_post_gnn = nn.BatchNorm1d(hidden_size)
         self.bn_base_emb = nn.BatchNorm1d(hidden_size)
         
         self.mlp_pert_fuse=args['mlp_pert_fuse']
         self.set_self_attention = args['set_self_attention']
-        if self.mlp_pert_fuse:
-            if self.set_self_attention:
-                self.set_self_attention_num_head = args['set_self_attention_num_head']
-                self.set_self_attention_layernorm = args['set_self_attention_layernorm']
-                self.set_self_attention_agg = args['set_self_attention_agg']
-                self.set_self_attention_post_mlp = args['set_self_attention_post_mlp']
-                self.pert_fuse_linear_to_mlp = args['pert_fuse_linear_to_mlp']
-                
-                self.pert_fuse = Set_Self_Attention(hidden_size, hidden_size, hidden_size, self.set_self_attention_num_head, self.set_self_attention_layernorm)
-                
-                if self.pert_fuse_linear_to_mlp:
-                    self.pert_fuse_linear = MLP([hidden_size, hidden_size*2, hidden_size, 1], last_layer_act='ReLU')
-                else:
-                    self.pert_fuse_linear = nn.Linear(hidden_size, 1)
-                
-                if self.set_self_attention_post_mlp:
-                    self.pert_fuse_mlp = MLP([hidden_size, hidden_size*2, hidden_size], last_layer_act='ReLU')
-            else:
-                self.pert_fuse = MLP([hidden_size, hidden_size*2, hidden_size], last_layer_act='ReLU')
         
+        if self.mlp_pert_fuse:
+            if args['pert_fuse_mlp']:
+                self.pert_fuse = MLP([hidden_size, hidden_size, hidden_size], last_layer_act='ReLU')
+            else:
+                self.pert_fuse = nn.ReLU()
+
         # uncertainty mode
         if self.uncertainty:
             self.uncertainty_w = MLP([hidden_size, hidden_size*2, hidden_size, 1], last_layer_act='linear')
@@ -533,34 +551,44 @@ class PertNet(torch.nn.Module):
         x, batch = data.x, data.batch
         num_graphs = len(data.batch.unique())
         
+        if self.mean_control:
+            x[:, 0] = torch.FloatTensor(np.tile(self.ctrl, num_graphs)).to(self.args['device'])  
+            
         ## get base gene embeddings
         emb = self.gene_emb(torch.LongTensor(list(range(self.num_genes))).repeat(num_graphs, ).to(self.args['device']))        
         emb = self.bn_emb(emb)
         base_emb = self.emb_trans(emb)
         #base_emb = self.bn_base_emb(base_emb)
         
-        if self.add_gene_expression:	
-            ## add the gene expression positional embedding	
-            gene_base = x[:, 0].reshape(-1,1)	
-            gene_emb = self.gene_basal_w(gene_base)	
-            combined = gene_emb+base_emb	
-            combined = self.bn_gene_base_trans(combined)	
-            base_emb = self.gene_base_trans_w(combined)	
-            base_emb = self.bn_gene_base(base_emb)
-        
-        if not self.post_coexpress:
-        
-            if self.gene_sim_pos_emb:
-                pos_emb = self.emb_pos(torch.LongTensor(list(range(self.num_genes))).repeat(num_graphs, ).to(self.args['device']))
-                for idx, layer in enumerate(self.layers_emb_pos):
-                    pos_emb = layer(pos_emb, self.G_coexpress, self.G_coexpress_weight)
-                    if idx < len(self.layers_emb_pos) - 1:
-                        pos_emb = pos_emb.relu()
+        if not self.add_gene_expression_back:
+            if self.add_gene_expression:	
+                ## add the gene expression positional embedding	
+                gene_base = x[:, 0].reshape(-1,1)	
+                
+                if self.expression_concat:
+                    combined = torch.hstack((gene_base, base_emb))
+                else:
+                    gene_emb = self.gene_basal_w(gene_base)	
+                    combined = gene_emb+base_emb
 
-                #base_emb = self.emb_trans(torch.cat((emb, pos_emb), axis = 1))
+                if self.expression_no_bn:    
+                    base_emb = self.gene_base_trans_w(combined)	
+                else:
+                    base_emb = self.gene_base_trans_w(combined)	
+                    base_emb = self.bn_gene_base(base_emb)
+        
+        
+        if self.gene_sim_pos_emb:
+            pos_emb = self.emb_pos(torch.LongTensor(list(range(self.num_genes))).repeat(num_graphs, ).to(self.args['device']))
+            for idx, layer in enumerate(self.layers_emb_pos):
+                pos_emb = layer(pos_emb, self.G_coexpress, self.G_coexpress_weight)
+                if idx < len(self.layers_emb_pos) - 1:
+                    pos_emb = pos_emb.relu()
 
-                base_emb = base_emb + 0.2 * pos_emb
-                base_emb = self.emb_trans_v2(base_emb)
+            #base_emb = self.emb_trans(torch.cat((emb, pos_emb), axis = 1))
+
+            base_emb = base_emb + 0.2 * pos_emb
+            base_emb = self.emb_trans_v2(base_emb)
 
 
         ## get perturbation index and embeddings
@@ -595,43 +623,18 @@ class PertNet(torch.nn.Module):
         
         if self.mlp_pert_fuse:
             
-            if self.set_self_attention:
-                pert_track = {}
-                for i, j in enumerate(pert_index[0]):
-                    if j.item() in pert_track:
-                        pert_track[j.item()] = torch.stack((pert_track[j.item()], pert_global_emb[pert_index[1][i]]))
-                    else:
-                        pert_track[j.item()] = pert_global_emb[pert_index[1][i]]
+            pert_track = {}
+            for i, j in enumerate(pert_index[0]):
+                if j in pert_track:
+                    pert_track[j] += pert_global_emb[pert_index[1][i]]
+                else:
+                    pert_track[j] = pert_global_emb[pert_index[1][i]]
+            
+            if len(list(pert_track.values())) > 0:
+                emb_total = self.pert_fuse(torch.stack(list(pert_track.values())))
 
-                for j, emb in pert_track.items():
-                    if len(emb.shape) == 1:
-                        emb = emb.unsqueeze(0).unsqueeze(0)
-                    else:
-                        emb = emb.unsqueeze(0)
-                        
-                    if self.set_self_attention_agg == 'sum':
-                        pert_fuse_emb = torch.sum(self.pert_fuse(emb, emb)[0], axis = 0)
-                    elif self.set_self_attention_agg == 'weight_ori_emb':
-                        att = self.pert_fuse_linear(self.pert_fuse(emb, emb)[0])
-                        pert_fuse_emb = torch.sum(att * emb.squeeze(0), axis = 0)
-                    elif self.set_self_attention_agg == 'weight_post_emb':
-                        post_emb = self.pert_fuse(emb, emb)[0]
-                        pert_fuse_emb = torch.sum(self.pert_fuse_linear(post_emb) * post_emb, axis = 0)    
-                        
-                    if self.set_self_attention_post_mlp:
-                        pert_fuse_emb = self.pert_fuse_mlp(pert_fuse_emb)
-                    base_emb[j] += pert_fuse_emb    
-                    
-            else:
-                pert_track = {}
-                for i, j in enumerate(pert_index[0]):
-                    if j in pert_track:
-                        pert_track[j] += pert_global_emb[pert_index[1][i]]
-                    else:
-                        pert_track[j] = pert_global_emb[pert_index[1][i]]
-
-                for j, emb in pert_track.items():
-                    base_emb[j] += self.pert_fuse(emb)
+                for idx, j in enumerate(pert_track.keys()):
+                    base_emb[j] += emb_total[idx]
                 
             base_emb = base_emb.reshape(num_graphs * self.num_genes, -1)
             
@@ -640,30 +643,22 @@ class PertNet(torch.nn.Module):
                 lambda_i = self.pert_emb_lambda
                 base_emb[j] += lambda_i * pert_global_emb[pert_index[1][i]]
             base_emb = base_emb.reshape(num_graphs * self.num_genes, -1)
-
-        '''
-        ## add the gene expression positional embedding
-        gene_base = x[:, 0].reshape(-1,1)
-        gene_emb = self.gene_basal_w(gene_base)
-        combined = gene_emb+base_emb
-        combined = self.bn_gene_base_trans(combined)
-        base_emb = self.gene_base_trans_w(combined)
-        base_emb = self.bn_gene_base(base_emb)
-        '''
         
-        if self.post_coexpress:
-        
-            if self.gene_sim_pos_emb:
-                pos_emb = self.emb_pos(torch.LongTensor(list(range(self.num_genes))).repeat(num_graphs, ).to(self.args['device']))
-                for idx, layer in enumerate(self.layers_emb_pos):
-                    pos_emb = layer(pos_emb, self.G_coexpress, self.G_coexpress_weight)
-                    if idx < len(self.layers_emb_pos) - 1:
-                        pos_emb = pos_emb.relu()
+        if self.add_gene_expression_back:	
+            ## add the gene expression positional embedding	
+            gene_base = x[:, 0].reshape(-1,1)	
+                
+            if self.expression_concat:
+                combined = torch.hstack((gene_base, base_emb))
+            else:
+                gene_emb = self.gene_basal_w(gene_base)	
+                combined = gene_emb+base_emb
 
-                #base_emb = self.emb_trans(torch.cat((emb, pos_emb), axis = 1))
-
-                base_emb = base_emb + 0.2 * pos_emb
-                base_emb = self.emb_trans_v2(base_emb)
+            if self.expression_no_bn:    
+                base_emb = self.gene_base_trans_w(combined)	
+            else:
+                base_emb = self.gene_base_trans_w(combined)	
+                base_emb = self.bn_gene_base(base_emb)
         
         
         ## add the perturbation positional embedding

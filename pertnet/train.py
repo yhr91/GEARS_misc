@@ -189,6 +189,10 @@ def trainer(args):
     args['num_genes'] = len(gene_list)
     ctrl_expression = torch.tensor(np.mean(adata.X[adata.obs.condition == 'ctrl'], axis = 0)).reshape(-1,).to(args['device'])
     
+    if args['mean_control']:
+        from utils import get_mean_ctrl
+        args['ctrl'] = get_mean_ctrl(adata).values
+        
     try:
         args['num_ctrl_samples'] = adata.uns['num_ctrl_samples']
     except:
@@ -380,16 +384,17 @@ def trainer(args):
                 wandb.log({'test_' + i + '_' + m: j[m]})
     
     
-    if 'Norman2019' in args['dataset']:
+    if 'umi' in args['dataset']:
         
         train_res = evaluate(pertdl.loaders['train_loader'], best_model, args)
         val_res = evaluate(pertdl.loaders['val_loader'], best_model, args)
         
         high_umi_idx = get_high_umi_idx(args['gene_list'])
+        from utils import get_mean_ctrl
         mean_control = get_mean_ctrl(adata)
         test_synergy_loss = {}
         
-        for subtype in ['SYNERGY_SIMILAR_PHENO', 'SYNERGY_DISSIMILAR_PHENO', 'SUPPRESSOR', 'POTENTIATION', 'ADDITIVE']:
+        for subtype in ['POTENTIATION', 'SYNERGY_SIMILAR_PHENO', 'SYNERGY_DISSIMILAR_PHENO', 'SUPPRESSOR', 'ADDITIVE']:
 
             train_loss, train_mag = compute_synergy_loss(train_res, mean_control,
                                                 high_umi_idx, subtype = subtype)
@@ -543,6 +548,7 @@ def parse_arguments():
     parser.add_argument('--network_type_gene', default = 'co-expression_train', type=str, choices = ['co-expression_train', 'gene_ontology', 'string_ppi', 'all'])
     parser.add_argument('--indv_out_layer_uncertainty', default=False, action='store_true')
     parser.add_argument('--add_gene_expression', default=False, action='store_true')
+    parser.add_argument('--add_gene_expression_back', default=False, action='store_true')
     parser.add_argument('--post_coexpress', default=False, action='store_true')
     parser.add_argument('--mlp_pert_fuse', default=False, action='store_true')
     parser.add_argument('--set_self_attention', default=False, action='store_true')
@@ -553,7 +559,18 @@ def parse_arguments():
     parser.add_argument('--cg_mlp', choices=['baseline', 'small', 'deep', 'wide'], default = 'baseline', type = str)
     parser.add_argument('--pert_fuse_linear_to_mlp', default=False, action='store_true')
     parser.add_argument('--de_drop', default=False, action='store_true')
+    parser.add_argument('--mean_control', default=False, action='store_true')
     parser.add_argument('--add_gene_expression_before_cross_gene', default=False, action='store_true')
+    
+    parser.add_argument('--expression_concat', default=False, action='store_true')
+    parser.add_argument('--expression_no_bn', default=False, action='store_true')
+    
+    parser.add_argument('--emb_trans_v2_mlp', default=False, action='store_true')
+    parser.add_argument('--emb_trans_mlp', default=False, action='store_true')
+    parser.add_argument('--pert_base_trans_w_mlp', default=False, action='store_true')
+    parser.add_argument('--gene_base_trans_w_mlp', default=False, action='store_true')
+    parser.add_argument('--transform_mlp', default=False, action='store_true')
+    parser.add_argument('--pert_fuse_mlp', default=False, action='store_true')
     
     # loss
     parser.add_argument('--pert_loss_wt', type=int, default=1,
