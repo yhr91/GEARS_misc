@@ -173,7 +173,7 @@ def trainer(args):
     elif args['dataset'] == 'Adamson2016':
         data_path = '/dfs/project/perturb-gnn/datasets/Adamson2016_hvg+perts_more_de_in_genes.h5ad'
     elif args['dataset'] == 'Dixit2016':
-        data_path = '/dfs/project/perturb-gnn/datasets/Dixit2016_hvg+perts_more_de.h5ad'
+        data_path = '/dfs/project/perturb-gnn/datasets/Dixit2016_hvg+perts_more_de_in_perts.h5ad'
     elif args['dataset'] == 'Norman2019_Adamson2016':
         data_path = '/dfs/project/perturb-gnn/datasets/trans_norman_adamson/norman2019.h5ad'
     elif args['dataset'] == 'Frangieh2020':
@@ -561,6 +561,7 @@ def parse_arguments():
     parser.add_argument('--de_drop', default=False, action='store_true')
     parser.add_argument('--mean_control', default=False, action='store_true')
     parser.add_argument('--add_gene_expression_before_cross_gene', default=False, action='store_true')
+    parser.add_argument('--add_gene_expression_gene_specific', default=False, action='store_true')
     
     parser.add_argument('--expression_concat', default=False, action='store_true')
     parser.add_argument('--expression_no_bn', default=False, action='store_true')

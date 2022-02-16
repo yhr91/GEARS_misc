@@ -348,7 +348,8 @@ class PertNet(torch.nn.Module):
         self.gene_sim_pos_emb = args['gene_sim_pos_emb']
         self.num_layers_gene_pos = args['gene_sim_pos_emb_num_layers']
         self.model_backend = args['model_backend']
-
+        self.add_gene_expression_gene_specific = args['add_gene_expression_gene_specific']
+        
         self.args = args        
         # lambda for aggregation between global perturbation emb + gene embedding
         self.pert_emb_lambda = args['pert_emb_lambda']
@@ -433,8 +434,13 @@ class PertNet(torch.nn.Module):
                                              hidden_size])
 
                 # First layer parameters
-                self.indv_w2 = nn.Parameter(torch.rand(1, self.num_genes,
+                if self.add_gene_expression_gene_specific:
+                    self.indv_w2 = nn.Parameter(torch.rand(1, self.num_genes,
+                                                       hidden_size+2))
+                else:
+                    self.indv_w2 = nn.Parameter(torch.rand(1, self.num_genes,
                                                        hidden_size+1))
+                    
                 self.indv_b2 = nn.Parameter(torch.rand(1, self.num_genes))
                 nn.init.xavier_normal_(self.indv_w2)
                 nn.init.xavier_normal_(self.indv_b2)
@@ -525,10 +531,27 @@ class PertNet(torch.nn.Module):
         self.set_self_attention = args['set_self_attention']
         
         if self.mlp_pert_fuse:
-            if args['pert_fuse_mlp']:
-                self.pert_fuse = MLP([hidden_size, hidden_size, hidden_size], last_layer_act='ReLU')
+            if self.set_self_attention:
+                self.set_self_attention_num_head = args['set_self_attention_num_head']
+                self.set_self_attention_layernorm = args['set_self_attention_layernorm']
+                self.set_self_attention_agg = args['set_self_attention_agg']
+                self.set_self_attention_post_mlp = args['set_self_attention_post_mlp']
+                self.pert_fuse_linear_to_mlp = args['pert_fuse_linear_to_mlp']
+
+                self.pert_fuse = Set_Self_Attention(hidden_size, hidden_size, hidden_size, self.set_self_attention_num_head, self.set_self_attention_layernorm)
+
+                if self.pert_fuse_linear_to_mlp:
+                    self.pert_fuse_linear = MLP([hidden_size, hidden_size*2, hidden_size, 1], last_layer_act='ReLU')
+                else:
+                    self.pert_fuse_linear = nn.Linear(hidden_size, 1)
+
+                if self.set_self_attention_post_mlp:
+                    self.pert_fuse_mlp = MLP([hidden_size, hidden_size*2, hidden_size], last_layer_act='ReLU')
             else:
-                self.pert_fuse = nn.ReLU()
+                if args['pert_fuse_mlp']:
+                    self.pert_fuse = MLP([hidden_size, hidden_size, hidden_size], last_layer_act='ReLU')
+                else:
+                    self.pert_fuse = nn.ReLU()
 
         # uncertainty mode
         if self.uncertainty:
@@ -622,22 +645,78 @@ class PertNet(torch.nn.Module):
 
         
         if self.mlp_pert_fuse:
-            
-            pert_track = {}
-            for i, j in enumerate(pert_index[0]):
-                if j in pert_track:
-                    pert_track[j] += pert_global_emb[pert_index[1][i]]
-                else:
-                    pert_track[j] = pert_global_emb[pert_index[1][i]]
-            
-            if len(list(pert_track.values())) > 0:
-                emb_total = self.pert_fuse(torch.stack(list(pert_track.values())))
-
-                for idx, j in enumerate(pert_track.keys()):
-                    base_emb[j] += emb_total[idx]
+            if self.set_self_attention:
+                pert_track = {}
+                for i, j in enumerate(pert_index[0]):
+                    if j.item() in pert_track:
+                        pert_track[j.item()] = torch.stack((pert_track[j.item()], pert_global_emb[pert_index[1][i]]))
+                    else:
+                        pert_track[j.item()] = pert_global_emb[pert_index[1][i]]
                 
+                if len(list(pert_track.values())) > 0:
+                    pert_track_ssa = {}
+
+                    for j, emb in pert_track.items():
+                        if len(emb.shape) == 1:
+                            emb = emb.unsqueeze(0).unsqueeze(0)
+                        else:
+                            emb = emb.unsqueeze(0)
+
+                        pert_track_ssa[j] = self.pert_fuse(emb, emb)[0]
+
+                    agg_track = {}
+                    if self.set_self_attention_agg == 'sum':
+                        for j, emb in pert_track_ssa.items():
+                            pert_fuse_emb = torch.sum(emb, axis = 0)
+                            agg_track[j] = pert_fuse_emb
+                    else:
+                        # batch calculation of attention
+                        att = self.pert_fuse_linear(torch.vstack(list(pert_track_ssa.values())))
+                        
+                        if self.set_self_attention_agg == 'weight_ori_emb':
+                            pert_track_ = pert_track
+                        elif self.set_self_attention_agg == 'weight_post_emb':
+                            pert_track_ = pert_track_ssa
+
+                        count = 0
+                        for j, emb in pert_track_.items():
+                            if len(emb.shape) == 1:
+                                sh = 1
+                            else:
+                                sh = emb.shape[0]
+                            pert_fuse_emb = torch.sum(att[count:count+sh] * emb, axis = 0)
+                            count += sh
+                            agg_track[j] = pert_fuse_emb
+                            
+                            
+                    if self.set_self_attention_post_mlp:                        
+                        emb_total = self.pert_fuse_mlp(torch.stack(list(agg_track.values())))
+                        for idx, j in enumerate(agg_track.keys()):
+                            base_emb[j] += emb_total[idx]
+                    else:
+                        for j, emb in agg_track.items():
+                            base_emb[j] += emb                     
+                    
+            else:
+                pert_track = {}
+                for i, j in enumerate(pert_index[0]):
+                    if j in pert_track:
+                        pert_track[j] += pert_global_emb[pert_index[1][i]]
+                    else:
+                        pert_track[j] = pert_global_emb[pert_index[1][i]]
+
+                if len(list(pert_track.values())) > 0:
+                    if len(list(pert_track.values())) == 1:
+                        # circumvent when batch size = 1 with single perturbation and cannot feed into MLP
+                        emb_total = self.pert_fuse(torch.stack(list(pert_track.values()) * 2))
+                    else:
+                        emb_total = self.pert_fuse(torch.stack(list(pert_track.values())))
+
+                    for idx, j in enumerate(pert_track.keys()):
+                        base_emb[j] += emb_total[idx]
+
             base_emb = base_emb.reshape(num_graphs * self.num_genes, -1)
-            
+
         else:
             for i, j in enumerate(pert_index[0]):
                 lambda_i = self.pert_emb_lambda
@@ -685,17 +764,17 @@ class PertNet(torch.nn.Module):
                 out = out.reshape(num_graphs, self.num_genes, -1)
             
             if self.cross_gene_decoder in ['mlp', 'skip-connect', 'skip-connect-mlp']:
-                output = self.cross_gene_state(out.squeeze())
+                output = self.cross_gene_state(out.reshape(num_graphs, self.num_genes, -1).squeeze(2))
                 if self.cross_gene_decoder == 'skip-connect':
-                    out = output + out.squeeze()
+                    out = output + out.reshape(num_graphs, self.num_genes, -1).squeeze(2)
                 elif self.cross_gene_decoder == 'skip-connect-mlp':
-                    out = self.cross_gene_state_2(output + out.squeeze())
+                    out = self.cross_gene_state_2(output + out.reshape(num_graphs, self.num_genes, -1).squeeze(2))
                 else:
                     out = output
                                  
             elif self.cross_gene_MLP:
                 # Compute global gene embedding
-                cross_gene_embed = self.cross_gene_state(out.squeeze())
+                cross_gene_embed = self.cross_gene_state(out.reshape(num_graphs, self.num_genes, -1).squeeze(2))
 
                 # repeat embedding num_genes times
                 cross_gene_embed = cross_gene_embed.repeat(1, self.num_genes)
@@ -703,6 +782,9 @@ class PertNet(torch.nn.Module):
                 # stack it under out
                 cross_gene_embed = cross_gene_embed.reshape([num_graphs,self.num_genes, -1])
                 cross_gene_out = torch.cat([out, cross_gene_embed], 2)
+                
+                if self.add_gene_expression_gene_specific:
+                    cross_gene_out = torch.cat([x[:, 0].reshape(num_graphs, self.num_genes, -1), cross_gene_out], 2)
 
                 # First pass through MLP
                 cross_gene_out = cross_gene_out * self.indv_w2
