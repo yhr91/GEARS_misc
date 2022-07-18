@@ -1,6 +1,6 @@
 # GEARS (Miscellaneous) 
 
-# Miscellaneous code and analysis scripts related to [GEARS: Predicting transcriptional outcomes of novel multi-gene perturbations](https://github.com/snap-stanford/GEARS)
+### Miscellaneous code and analysis scripts related to [GEARS: Predicting transcriptional outcomes of novel multi-gene perturbations](https://github.com/snap-stanford/GEARS)
 
 
 This directory contains:
