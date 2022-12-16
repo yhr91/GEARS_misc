@@ -63,6 +63,8 @@ class GEARS:
         self.pert_list = pert_data.pert_names.tolist()
         self.num_genes = len(self.gene_list)
         self.num_perts = len(self.pert_list)
+        self.saved_pred = {}
+        self.saved_logvar_sum = {}
         
         self.ctrl_expression = torch.tensor(np.mean(self.adata.X[self.adata.obs.condition == 'ctrl'], axis = 0)).reshape(-1,).to(self.device)
         pert_full_id2pert = dict(self.adata.obs[['condition_name', 'condition']].values)
@@ -71,6 +73,9 @@ class GEARS:
         else:
             self.dict_filter = {pert_full_id2pert[i]: j for i,j in self.adata.uns['non_zeros_gene_idx'].items() if i in pert_full_id2pert}
         self.ctrl_adata = self.adata[self.adata.obs['condition'] == 'ctrl']
+        
+        gene_dict = {g:i for i,g in enumerate(self.gene_list)}
+        self.pert2gene = {p:gene_dict[pert] for p, pert in enumerate(self.pert_list) if pert in self.gene_list}
         
     def tunable_parameters(self):
         return {'hidden_size': 'hidden dimension, default 64',
@@ -101,7 +106,9 @@ class GEARS:
                          G_coexpress_weight = None,
                          no_perturb = False, 
                          cell_fitness_pred = False,
-                         go_path = None):
+                         go_path = None,
+                         #pert2gene = None
+                        ):
         
         self.config = {'hidden_size': hidden_size,
                        'num_go_gnn_layers' : num_go_gnn_layers, 
@@ -121,7 +128,8 @@ class GEARS:
                        'num_genes': self.num_genes,
                        'num_perts': self.num_perts,
                        'no_perturb': no_perturb,
-                       'cell_fitness_pred': cell_fitness_pred
+                       'cell_fitness_pred': cell_fitness_pred,
+                       #'pert2gene': self.pert2gene
                       }
         
         if self.wandb:
@@ -186,7 +194,7 @@ class GEARS:
         for pert in pert_list:
             for i in pert:
                 if i not in self.pert_list:
-                    raise ValueError("The gene is not in the perturbation graph. Please select from GEARS.pert_list!")
+                    raise ValueError(i+ " not in the perturbation graph. Please select from PertNet.gene_list!")
         
         if self.config['uncertainty']:
             results_logvar = {}
@@ -194,8 +202,19 @@ class GEARS:
         self.best_model = self.best_model.to(self.device)
         self.best_model.eval()
         results_pred = {}
+        results_logvar_sum = {}
+        
         from torch_geometric.data import DataLoader
         for pert in pert_list:
+            try:
+                #If prediction is already saved, then skip inference
+                results_pred['_'.join(pert)] = self.saved_pred['_'.join(pert)]
+                if self.config['uncertainty']:
+                    results_logvar_sum['_'.join(pert)] = self.saved_logvar_sum['_'.join(pert)]
+                continue
+            except:
+                pass
+            
             cg = create_cell_graph_dataset_for_prediction(pert, self.ctrl_adata, self.pert_list, self.device)
             loader = DataLoader(cg, 300, shuffle = False)
             batch = next(iter(loader))
@@ -205,13 +224,16 @@ class GEARS:
                 if self.config['uncertainty']:
                     p, unc = self.best_model(batch)
                     results_logvar['_'.join(pert)] = np.mean(unc.detach().cpu().numpy(), axis = 0)
+                    results_logvar_sum['_'.join(pert)] = np.exp(-np.mean(results_logvar['_'.join(pert)]))
                 else:
                     p = self.best_model(batch)
                     
             results_pred['_'.join(pert)] = np.mean(p.detach().cpu().numpy(), axis = 0)
+                
+        self.saved_pred.update(results_pred)
         
         if self.config['uncertainty']:
-            results_logvar_sum = {i: np.exp(-np.mean(j)) for i,j in results_logvar.items()}    
+            self.saved_logvar_sum.update(results_logvar_sum)
             return results_pred, results_logvar_sum
         else:
             return results_pred
@@ -220,17 +242,29 @@ class GEARS:
         ## given a gene pair, return (1) transcriptome of A,B,A+B and (2) GI scores. 
         ## if uncertainty mode is on, also return uncertainty score.
         
-        preds = self.predict([[combo[0]], [combo[1]], combo])
+        try:
+            # If prediction is already saved, then skip inference
+            pred = {}
+            pred[combo[0]] = self.saved_pred[combo[0]]
+            pred[combo[1]] = self.saved_pred[combo[1]]
+            pred['_'.join(combo)] = self.saved_pred['_'.join(combo)]
+        except:
+            if self.config['uncertainty']:
+                pred = self.predict([[combo[0]], [combo[1]], combo])[0]
+            else:
+                pred = self.predict([[combo[0]], [combo[1]], combo])
 
         mean_control = get_mean_control(self.adata).values  
-        preds = {p:preds[p]-mean_control for p in preds} 
+        pred = {p:pred[p]-mean_control for p in pred} 
 
         if GI_genes_file is not None:
             # If focussing on a specific subset of genes for calculating metrics
-            GI_genes_idx = get_GI_genes_idx(self.adata, GI_genes_file)
-            preds = {p:preds[p][GI_genes_idx] for p in preds} 
-
-        return get_GI_params(preds, combo)
+            GI_genes_idx = get_GI_genes_idx(self.adata, GI_genes_file)       
+        else:
+            GI_genes_idx = np.arange(len(self.adata.var.gene_name.values))
+            
+        pred = {p:pred[p][GI_genes_idx] for p in pred}
+        return get_GI_params(pred, combo)
     
     def plot_perturbation(self, query, save_file = None):
         import seaborn as sns
