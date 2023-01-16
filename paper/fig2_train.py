@@ -1,9 +1,12 @@
 import argparse
+import sys
+sys.path.append('../')
+
 from gears import PertData, GEARS
 parser = argparse.ArgumentParser()
 parser.add_argument('--seed', type=int, default=1)
 parser.add_argument('--device', type=int, default=0)
-parser.add_argument('--dataset', type=str, default='replogle2020_hvg', choices = ['jost2020_hvg', 'tian2021_crispri_hvg', 'tian2021_crispra_hvg', 'replogle2020_hvg', 'replogle_rpe1_gw_hvg', 'replogle_k562_gw_hvg', 'replogle_k562_essential_hvg', 'tian2019_neuron_hvg', 'tian2019_ipsc_hvg', 'replogle_rpe1_gw_filtered_hvg', 'replogle_k562_essential_filtered_hvg', 'norman'])
+parser.add_argument('--dataset', type=str, default='norman2019', choices = ['norman2019', 'jost2020_hvg', 'tian2021_crispri_hvg', 'tian2021_crispra_hvg', 'replogle2020_hvg', 'replogle_rpe1_gw_hvg', 'replogle_k562_gw_hvg', 'replogle_k562_essential_hvg', 'tian2019_neuron_hvg', 'tian2019_ipsc_hvg', 'replogle_rpe1_gw_filtered_hvg', 'replogle_k562_essential_filtered_hvg', 'norman'])
 parser.add_argument('--model', type=str, default='gears', choices = ['gears', 'no_perturb'])
 parser.add_argument('--batch_size', type=int, default=32)
 
@@ -17,14 +20,17 @@ else:
     epoch = 15
     no_perturb = False
 
-data_path = '/dfs/project/perturb-gnn/datasets/data/'
+## Set this to local dataloader directory
+data_path = './data/'
 
 if args.dataset == 'tian2019_neuron_hvg':
-    gene_path = '/dfs/user/kexinh/gears2/data/essential_all_data_pert_genes_tian2019_neuron.pkl'
+    gene_path = './data/essential_all_data_pert_genes_tian2019_neuron.pkl'
 elif args.dataset == 'tian2019_ipsc_hvg':
-    gene_path = '/dfs/user/kexinh/gears2/data/essential_all_data_pert_genes_tian2019_ipsc.pkl'
+    gene_path = './data/essential_all_data_pert_genes_tian2019_ipsc.pkl'
 elif args.dataset == 'jost2020_hvg':
-    gene_path = '/dfs/user/kexinh/gears2/data/essential_all_data_pert_genes_jost2020.pkl'
+    gene_path = './data/essential_all_data_pert_genes_jost2020.pkl'
+elif args.dataset == 'norman2019':
+    gene_path = './data/essential_norman.pkl'
 else:
     gene_path = None
 
@@ -49,6 +55,8 @@ elif args.dataset == 'tian2019_ipsc_hvg':
     go_path = './data/go_essential_tian2020_ipsc.csv'
 elif args.dataset == 'jost2020_hvg':
     go_path = './data/go_essential_jost2020.csv'
+elif args.dataset == 'norman2019':
+    go_path = './data/go_essential_norman.csv'
 else:
     go_path = None
     
