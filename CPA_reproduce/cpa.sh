@@ -3,7 +3,7 @@ do
 
 mkdir "$1_split${seed}"
 
-python train.py --dataset_path /dfs/project/perturb-gnn/datasets/data/$1_simulation_cpa.h5ad \
+python train.py --dataset_path ./data/$1_simulation_cpa.h5ad \
 --dataset $1 \
 --split_key "split${seed}" \
 --save_dir "$1_split${seed}" \
