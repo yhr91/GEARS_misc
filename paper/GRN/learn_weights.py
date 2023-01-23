@@ -205,10 +205,10 @@ if __name__ == '__main__':
 
 
     parser.set_defaults(
-    split_dir ='/dfs/user/kexinh/pertnet/perturb_GNN/demo/data/norman/splits',
-    graph_name='/dfs/project/perturb-gnn/graphs/linear/grnboost/norman_1_top50.csv',
+    split_dir ='../data/norman2019/splits',
+    graph_name='norman2019_1_top50.csv',
     method='linear',
-    out_dir='/dfs/project/perturb-gnn/graphs/linear/')
+    out_dir='./')
 
     args = parser.parse_args()
     main(args)

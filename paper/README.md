@@ -5,4 +5,8 @@ To recreate Fig 2:
 - Move `essential_norman.pkl` and `go_essential_norman.csv` to `./data`
 - So `./data` should contain `essential_norman.pkl`, `go_essential_norman.csv` and `norman2019/data_pyg/`
 
-Please raise an issue or email yroohani@stanford.edu in case of any issues
+For other baselines:
+- CPA: See `CPA_reproduce`
+- GRN: See `GRN`
+
+Please raise an issue or email yroohani@stanford.edu in case of any problems/questions
