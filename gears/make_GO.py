@@ -5,7 +5,7 @@ import pandas as pd
 
 data_name = 'dixit'
 
-with open(os.path.join('./data/', 'gene2go.pkl'), 'rb') as f:
+with open(os.path.join('./data/', 'gene2go_all.pkl'), 'rb') as f:
     gene2go = pickle.load(f)
     
 with open('./data/essential_' + data_name + '.pkl', 'rb') as f:
