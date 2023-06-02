@@ -5,12 +5,12 @@ import scanpy as sc
 import pandas as pd 
 import copy
 import sys
-sys.path.append('../')
+sys.path.append('../../')
 
 import os
-from data import PertDataloader
-from inference import evaluate, compute_metrics
-from inference import GIs
+#from data import PertDataloader
+#from inference import evaluate, compute_metrics
+from gears_misc.gears.inference import GIs
 import matplotlib.patches as mpatches
 
 # Linear model fitting functions
@@ -51,29 +51,32 @@ def get_t_p_seen1(metric, dict_names, return_names=False, uncert_filter=True):
         seen1_perts_gi = np.unique([item for sublist in all_perts_gi for item in sublist])
 
         # Iterate over all models trained with these single genes held out
-        for GI in np.sort(seen1_perts_gi):
-            for d in seen1_dict_names:
-                if GI in d:
-                    res_seen1[GI] = np.load(d, allow_pickle=True).item()
+        for gene in np.sort(seen1_perts_gi):
+            for fpath in seen1_dict_names:
+                if gene in fpath:
+                    
+                    res_seen1[gene] = np.load(fpath, allow_pickle=True).item()
 
                     # Get all keys for single pert model predictions that are relevant
                     if uncert_filter==True:
-                        allowed_keys = get_low_unc_perts(GI)
+                        allowed_keys = get_low_unc_perts(gene)
                     else:
-                        allowed_keys = res_seen1[GI].keys()
+                        allowed_keys = res_seen1[gene].keys()
                     
                     keys_ = [k for k in allowed_keys if k in GIs[GI_sel.upper()]]
                     res_t_names[GI_sel].extend(keys_)
                     res_p_names[GI_sel].extend(keys_)
 
                     try:
-                        t_vals = [res_seen1[GI][k]['truth'][metric] for k in keys_]
-                        p_vals = [res_seen1[GI][k]['pred'][metric] for k in keys_]
-                                 
+                        t_vals = [res_seen1[gene][k]['truth'][metric] for k in keys_]
+                        p_vals = [res_seen1[gene][k]['pred'][metric] for k in keys_]
+
                         res_p[GI_sel].extend(p_vals)
                         res_t[GI_sel].extend(t_vals)
                     except:
                         pass
+                    
+                  
                     
     res_p['synergy'] = res_p['synergy_similar_pheno'] + res_p['synergy_dissimilar_pheno'] +\
                        res_p['potentiation']
@@ -134,6 +137,129 @@ def get_t_p_seen2_naive(metric, dict_name, return_names=False):
     else:
         return res_p, res_t
 
+    
+def get_t_p_seen2_gears(metric, all_res_path, return_names=False):
+
+    # Seen 2
+    res_p = {}
+    res_t = {}
+    res_p_names = {}
+    res_t_names = {}
+
+    for GI in GI_names:
+        res_p[GI] = []
+        res_t[GI] = []
+        res_p_names[GI] = []
+        res_t_names[GI] = []
+
+    all_res = np.load(all_res_path, allow_pickle=True).item()
+
+    for GI in GI_names:
+        for pert in GIs[GI.upper()]:
+            
+            try:
+                loaded = all_res[pert]
+                res_t[GI].append(loaded['true'][metric])
+                res_p[GI].append(loaded['pred'][metric])
+                res_t_names[GI].append(pert)
+                res_p_names[GI].append(pert)
+
+            except:
+                pass
+
+    res_p['synergy'] = res_p['synergy_similar_pheno'] + res_p['synergy_dissimilar_pheno'] +\
+                       res_p['potentiation']
+    res_t['synergy'] = res_t['synergy_similar_pheno'] + res_t['synergy_dissimilar_pheno'] +\
+                       res_t['potentiation']
+    res_p_names['synergy'] = res_p_names['synergy_similar_pheno'] +\
+                             res_p_names['synergy_dissimilar_pheno'] +\
+                             res_p_names['potentiation']
+    res_t_names['synergy'] = res_t_names['synergy_similar_pheno'] +\
+                             res_t_names['synergy_dissimilar_pheno'] +\
+                             res_t_names['potentiation']
+
+    if return_names:
+        return res_p, res_t, res_p_names, res_t_names
+
+    else:
+        return res_p, res_t
+    
+    
+# Plot generation functions
+def get_t_p_seen1_gears(metric, all_res_path, return_names=False, uncert_filter=True):
+    res_seen1 = {}
+    res_p = {}
+    res_t = {}
+    res_p_names = {}
+    res_t_names = {}
+    
+    all_res = np.load(all_res_path, allow_pickle=True).item()
+
+    # Set up output dictionaries
+    for GI_sel in GI_names:
+        res_p[GI_sel] = []
+        res_t[GI_sel] = []
+        res_p_names[GI_sel] = []
+        res_t_names[GI_sel] = []
+
+        # For a given GI what are all the relevant perturbations
+        all_perts_gi = GIs[GI_sel.upper()]
+
+        # What are all the relevant single gene perturbations
+        all_perts_gi = [v.split('+') for v in all_perts_gi] 
+        seen1_perts_gi = np.unique([item for sublist in all_perts_gi for item in sublist])
+
+        # Iterate over all models trained with these single genes held out
+        
+        # Single gene involved in known GIs
+        for unseen_gene in np.sort(seen1_perts_gi):
+            
+            # Single gene models trained using LOO on that gene
+            for loo_gene in all_res:
+                
+                # If there's a match then record seen1 results
+                if unseen_gene == loo_gene:
+
+                    # Get all keys for single pert model predictions that are relevant
+                    if uncert_filter==True:
+                        allowed_combos = get_low_unc_perts(unseen_gene)
+                    else:
+                        allowed_combos = res_seen1[unseen_gene].keys()
+                        
+                    
+                    
+                    # Pick the combos that show the desired GI
+                    combos_ = [k for k in allowed_combos if k in GIs[GI_sel.upper()]]
+                    
+                    res_t_names[GI_sel].extend(combos_)
+                    res_p_names[GI_sel].extend(combos_)
+
+                    try:
+                    #breakpoint()
+                        t_vals = [all_res[unseen_gene]['true'][k][metric] for k in combos_]
+                        p_vals = [all_res[unseen_gene]['pred'][k][metric] for k in combos_]
+
+                        res_p[GI_sel].extend(p_vals)
+                        res_t[GI_sel].extend(t_vals)
+                    except:
+                        pass
+                    
+    res_p['synergy'] = res_p['synergy_similar_pheno'] + res_p['synergy_dissimilar_pheno'] +\
+                       res_p['potentiation']
+    res_t['synergy'] = res_t['synergy_similar_pheno'] + res_t['synergy_dissimilar_pheno'] +\
+                       res_t['potentiation']
+    res_p_names['synergy'] = res_p_names['synergy_similar_pheno'] +\
+                             res_p_names['synergy_dissimilar_pheno'] +\
+                             res_p_names['potentiation']
+    res_t_names['synergy'] = res_t_names['synergy_similar_pheno'] +\
+                             res_t_names['synergy_dissimilar_pheno'] +\
+                             res_t_names['potentiation']
+    
+    if return_names:
+        return res_p, res_t, res_p_names, res_t_names
+    
+    else:
+        return res_p, res_t
 
 def get_t_p_seen2(metric, dict_names, return_names=False):
 
@@ -213,13 +339,15 @@ def set_up_box_scatter(GI_sel, res_p, res_t, metric, GI_sel_first=False):
 def remove_nan(arr):
     return [x for x in arr if x==x]
 
+
+# 0.3868
+def get_low_unc_perts(gene, thresh_factor=0.5):
     
-def get_low_unc_perts(gene):
-    
-    logvar_df_file = '../GI_gene_mse/dfs/' + gene + '_crossgene_unc_logvar'
+    logvar_df_file = './GI_gene_mse/dfs/norman_umi_go_' + gene + '_logvar'
     logvar_df = pd.read_csv(logvar_df_file)
     logvar_df = logvar_df.set_index('condition')
-    thresh  = logvar_df.loc['thresh_mean_train'][0] + 0.386*logvar_df.loc['thresh_std_train'][0] 
+    thresh  = logvar_df.loc['thresh_mean_train'][0] + thresh_factor*logvar_df.loc['thresh_std_train'][0] 
+    #return logvar_df.index.values
     return logvar_df[logvar_df['0']<thresh].index.values
 
 def get_z_scores_logvar(logvar_df):
