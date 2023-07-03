@@ -12,10 +12,10 @@ pert_data.get_dataloader(batch_size = 32, test_batch_size = 128)
 gears_model = GEARS(pert_data, device = 'cuda:6', 
                         weight_bias_track = True, 
                         proj_name = 'gears', 
-                        exp_name = 'gears_misc_positional_umi_no_test')
+                        exp_name = 'gears_misc_umi_no_test')
 gears_model.model_initialize(hidden_size = 64,
                                uncertainty=False)
 
 gears_model.train(epochs = 20, lr = 1e-3)
 
-gears_model.save_model('gears_misc_positional_umi_no_test')
+gears_model.save_model('gears_misc_umi_no_test')
