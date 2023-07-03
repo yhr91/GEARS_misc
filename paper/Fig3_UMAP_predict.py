@@ -8,7 +8,7 @@ import tqdm
 import scanpy as sc
 
 data_name = 'norman_umi'
-model_name = 'gears_misc_umi_no_test_leavecluster_strict'
+model_name = 'gears_misc_umi_no_test'
 pert_data = PertData('/dfs/project/perturb-gnn/datasets/data')
 pert_data.load(data_path = '/dfs/project/perturb-gnn/datasets/data/'+data_name)
 pert_data.prepare_split(split = 'no_test', seed = 1)
@@ -88,4 +88,6 @@ all_GIs = Map(mapper, all_possible_combos, workers=10)
 # Construct final dictionary and save
 all_GIs = {str(key):val for key, val in zip(all_possible_combos, all_GIs)}
 np.save(model_name+'_allGI', all_GIs)
-np.save(model_name+'_alluncs', gears_model.saved_logvar_sum)
+
+# If computing uncertainty
+# np.save(model_name+'_alluncs', gears_model.saved_logvar_sum)
