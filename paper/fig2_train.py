@@ -1,6 +1,7 @@
+## Tested with GEARS v 0.1.1
+
 import argparse
 import sys
-#sys.path.append('../')
 
 from gears import PertData, GEARS
 parser = argparse.ArgumentParser()
