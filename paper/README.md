@@ -1,10 +1,11 @@
 To recreate Fig 2:
 
-- Download and unzip preprocessed Norman2019 dataloader for GEARS [here](https://dataverse.harvard.edu/api/access/datafile/6894431)
-- Move the uncompressed `norman2019.tar.gz` folder to `./data`. It should contain the subdirectory `data_pyg`
-- Move `essential_norman.pkl` and `go_essential_norman.csv` to `./data`
-- So `./data` should contain `essential_norman.pkl`, `go_essential_norman.csv` and `norman2019/data_pyg/`
-- Run `fig2_train.py` to train the model
+- Run this [notebook](https://github.com/yhr91/GEARS_misc/blob/main/paper/reproduce_preprint_results.ipynb)
+
+To recreate Fig 4:
+- First train the model using this [script](https://github.com/yhr91/GEARS_misc/blob/main/paper/Fig4_UMAP_train.py)
+- Then run inference for all combinations using this [script](https://github.com/yhr91/GEARS_misc/blob/main/paper/Fig4_UMAP_predict.py)
+- After that you can produce the UMAP using this [notebook](https://github.com/yhr91/GEARS_misc/blob/main/paper/Fig4.ipynb)
 
 The code here will not install GEARS from the [main repository](https://github.com/snap-stanford/GEARS). It will use the local path to GEARS in this repository `../gears`
 
